@@ -150,7 +150,10 @@ from zippergen.semantic import (
     semantic_snapshot,
     workflow_semantics,
 )
-from zippergen.assistant_backends import ASSISTANT_BACKENDS
+from zippergen.assistant_backends import (
+    ASSISTANT_BACKENDS,
+    assistant_backend_spec,
+)
 from zippergen.deployments import (
     _deployment_inventory,
     _prune_shared_connector_inboxes,
@@ -2279,13 +2282,10 @@ def _assistant_command(args) -> int:
                 f"Saved assistant configuration {name}: "
                 f"{value['backend']}"
             )
-            owner = (
-                "Codex CLI"
-                if value["backend"] == "codex"
-                else "Claude Code"
-            )
+            spec = assistant_backend_spec(value["backend"])
             print(
-                f"Authentication remains managed by {owner}."
+                "Authentication remains managed by "
+                f"{spec.label if spec else value['backend']}."
             )
             return 0
         if action in {"assign", "unassign"}:

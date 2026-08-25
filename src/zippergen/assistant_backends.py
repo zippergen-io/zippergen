@@ -99,20 +99,132 @@ _ASSISTANT_BASE_ENVIRONMENT = {
 # directly: it is given the paths where its own login lives, and no key. An
 # assistant that genuinely needs its own automated credential should be given
 # one explicitly, never one inferred from a workflow's model routing.
-#: The coding assistants ZipperGen can run, in the order they are offered.
-#:
-#: This is the only declaration. Configuration, workspace parsing, checks,
-#: completion, and the CLI choice lists all read it, so a backend cannot
-#: become executable without also being configurable and offerable -- the
-#: partial-update failure that a set repeated in ten places invites.
-#: ``tests/test_assistant_backends_declaration.py`` holds them together.
-ASSISTANT_BACKENDS = ("codex", "claude")
+def _codex_command(
+    executable: str, workspace: Path, action: "AssistantAction"
+) -> list[str]:
+    command = [
+        executable,
+        "exec",
+        "--ephemeral",
+        "--strict-config",
+        "--skip-git-repo-check",
+        "--cd",
+        str(workspace),
+        "--sandbox",
+        "read-only" if action.access == "read-only" else "workspace-write",
+    ]
+    if action.external_tools == "none":
+        command.extend(
+            [
+                "--ignore-user-config",
+                "--config",
+                "mcp_servers={}",
+                "--config",
+                'web_search="disabled"',
+                "--config",
+                "agents.enabled=false",
+                "--config",
+                "sandbox_workspace_write.network_access=false",
+            ]
+        )
+    command.append("-")
+    return command
 
 
+def _claude_command(
+    executable: str, workspace: Path, action: "AssistantAction"
+) -> list[str]:
+    tools = ["Read", "Glob", "Grep"]
+    if action.access == "write":
+        tools.extend(["Edit", "Write"])
+    if action.shell == "enabled":
+        tools.append("Bash")
+    command = [
+        executable,
+        "--print",
+        "--no-session-persistence",
+        "--input-format",
+        "text",
+        "--permission-mode",
+        "plan" if action.access == "read-only" else "acceptEdits",
+        "--tools",
+        ",".join(tools),
+    ]
+    if action.external_tools == "none":
+        command.extend(
+            [
+                "--safe-mode",
+                "--no-chrome",
+                "--disable-slash-commands",
+                "--strict-mcp-config",
+            ]
+        )
+    return command
+
+
+@dataclass(frozen=True)
+class AssistantBackendSpec:
+    """Everything ZipperGen needs in order to run one coding assistant.
+
+    Declaring a backend's *name* was never the hard part. Its label, its
+    login locations, its help command and its argv were each an
+    ``if codex else claude`` somewhere else -- so a newly declared backend
+    could pass every declaration test and then be executed, silently, through
+    the Claude branch.
+
+    A backend exists here or not at all.
+    """
+
+    #: The executable name, and the name written in configuration.
+    name: str
+    #: What a person calls it in an error message.
+    label: str
+    #: Environment variables naming where this CLI keeps its own login. No
+    #: credential is ever forwarded; see `_assistant_environment`.
+    login_environment: frozenset[str]
+    #: Options ZipperGen relies on; `check_cli_assistant` verifies each.
+    required_options: tuple[str, ...]
+    #: How to ask the CLI for its options, given its executable path.
+    help_command: Callable[[str], list[str]]
+    #: How to build the run command for one action.
+    command: Callable[[str, Path, "AssistantAction"], list[str]]
+
+
+ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
+    AssistantBackendSpec(
+        name="codex",
+        label="Codex CLI",
+        login_environment=frozenset({"CODEX_HOME"}),
+        required_options=_REQUIRED_CLI_OPTIONS["codex"],
+        help_command=lambda executable: [executable, "exec", "--help"],
+        command=_codex_command,
+    ),
+    AssistantBackendSpec(
+        name="claude",
+        label="Claude Code",
+        login_environment=frozenset({"CLAUDE_CONFIG_DIR"}),
+        required_options=_REQUIRED_CLI_OPTIONS["claude"],
+        help_command=lambda executable: [executable, "--help"],
+        command=_claude_command,
+    ),
+)
+
+ASSISTANT_BACKENDS = tuple(spec.name for spec in ASSISTANT_BACKEND_SPECS)
+
+_BACKENDS = {spec.name: spec for spec in ASSISTANT_BACKEND_SPECS}
+
+
+#: Derived: where each CLI keeps the login it established for itself, and
+#: nothing more. No credential is forwarded -- see `_assistant_environment`.
 _ASSISTANT_AUTH_ENVIRONMENT = {
-    "codex": {"CODEX_HOME"},
-    "claude": {"CLAUDE_CONFIG_DIR"},
+    spec.name: set(spec.login_environment) for spec in ASSISTANT_BACKEND_SPECS
 }
+
+
+def assistant_backend_spec(name: object) -> AssistantBackendSpec | None:
+    """Return the adapter for one backend, or None when nothing declares it."""
+
+    return _BACKENDS.get(str(name or "").strip().casefold())
 
 
 def _assistant_environment(backend: str) -> dict[str, str]:
@@ -142,12 +254,13 @@ def check_cli_assistant(backend: str) -> AssistantCliCheck:
     """
 
     selected = backend.strip().casefold()
-    if selected not in _REQUIRED_CLI_OPTIONS:
+    spec = assistant_backend_spec(selected)
+    if spec is None:
         return AssistantCliCheck(
             selected,
             None,
             False,
-            "backend must be codex or claude",
+            f"backend must be one of {', '.join(ASSISTANT_BACKENDS)}",
         )
     executable = shutil.which(selected)
     if executable is None:
@@ -157,11 +270,11 @@ def check_cli_assistant(backend: str) -> AssistantCliCheck:
             False,
             f"executable {selected!r} is not on PATH",
         )
-    command = [executable, "exec", "--help"] if selected == "codex" else [executable, "--help"]
+    command = spec.help_command(executable)
     try:
         completed = subprocess.run(
             command,
-            env=_assistant_environment(selected),
+            env=_assistant_environment(spec.name),
             text=True,
             capture_output=True,
             check=False,
@@ -325,17 +438,17 @@ def make_cli_assistant_backend(
             or selected_routes.get(participant)
             or default
         )
-        if selected not in set(ASSISTANT_BACKENDS):
+        spec = assistant_backend_spec(selected)
+        if spec is None:
             raise AssistantExecutionError(
                 f"Assistant action '{action.name}' has no backend. Assign a "
                 "named assistant configuration, provide an assistant backend "
                 "to the runtime, or configure a project assignment."
             )
-        executable = shutil.which(selected)
+        executable = shutil.which(spec.name)
         if executable is None:
-            label = "Codex CLI" if selected == "codex" else "Claude Code"
             raise AssistantExecutionError(
-                f"{label} executable '{selected}' was not found on PATH."
+                f"{spec.label} executable '{spec.name}' was not found on PATH."
             )
 
         workspace = root
@@ -353,66 +466,13 @@ def make_cli_assistant_backend(
             )
 
         prompt = _assistant_prompt(action, inputs)
-        if selected == "codex":
-            command = [
-                executable,
-                "exec",
-                "--ephemeral",
-                "--strict-config",
-                "--skip-git-repo-check",
-                "--cd",
-                str(workspace),
-                "--sandbox",
-                "read-only" if action.access == "read-only" else "workspace-write",
-            ]
-            if action.external_tools == "none":
-                command.extend(
-                    [
-                        "--ignore-user-config",
-                        "--config",
-                        "mcp_servers={}",
-                        "--config",
-                        'web_search="disabled"',
-                        "--config",
-                        "agents.enabled=false",
-                        "--config",
-                        "sandbox_workspace_write.network_access=false",
-                    ]
-                )
-            command.append("-")
-            stdin = prompt
-        else:
-            tools = ["Read", "Glob", "Grep"]
-            if action.access == "write":
-                tools.extend(["Edit", "Write"])
-            if action.shell == "enabled":
-                tools.append("Bash")
-            command = [
-                executable,
-                "--print",
-                "--no-session-persistence",
-                "--input-format",
-                "text",
-                "--permission-mode",
-                "plan" if action.access == "read-only" else "acceptEdits",
-                "--tools",
-                ",".join(tools),
-            ]
-            if action.external_tools == "none":
-                command.extend(
-                    [
-                        "--safe-mode",
-                        "--no-chrome",
-                        "--disable-slash-commands",
-                        "--strict-mcp-config",
-                    ]
-                )
-            stdin = prompt
+        command = spec.command(executable, workspace, action)
+        stdin = prompt
         try:
             completed = subprocess.run(
                 command,
                 cwd=workspace,
-                env=_assistant_environment(selected),
+                env=_assistant_environment(spec.name),
                 input=stdin,
                 text=True,
                 capture_output=True,
