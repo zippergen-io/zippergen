@@ -328,6 +328,10 @@ def _installed_zippergen_origin() -> str | None:
         recorded = json.loads(raw)
     except ValueError:
         return None
+    # A file this deployment did not write. Valid JSON is not enough -- it has
+    # to be the object the standard describes, or there is no origin to read.
+    if not isinstance(recorded, dict):
+        return None
     url = str(recorded.get("url") or "")
     if not url:
         return None
