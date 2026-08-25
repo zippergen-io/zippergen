@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Union
 
-from zippergen.value_codec import json_value_error, portable_value_error
+from zippergen.value_codec import ControlTag, json_value_error, portable_value_error
 
 __all__ = [
     # Types
@@ -245,42 +245,28 @@ Expr = Union[VarExpr, LitExpr]
 # loudly at bind time.  Structurally-identical constructs may share a tag; that
 # is provably harmless (it degrades locally to a single globally-fresh tag,
 # which is sufficient for correctness) because FIFO ordering disambiguates them.
-_KAPPA_PREFIX = "κ_ctrl_"
-
-
 def make_kappa_ctrl(construct_key: str) -> LitExpr:
     """Return the dedicated control tag for a construct, keyed on its content.
 
     ``construct_key`` is the canonical structural digest from
     ``canonical_construct_key``; equal content ⇒ equal tag in every process.
     """
-    return LitExpr(f"{_KAPPA_PREFIX}{construct_key}", str)
+    return LitExpr(ControlTag(construct_key), ControlTag)
 
 
-def is_reserved_control_text(value: object) -> bool:
-    """Return True for any string inside the runtime's reserved namespace.
+def is_control_value(value: object) -> bool:
+    """Return True for a runtime control payload.
 
-    The paper's correctness argument needs user payloads and control payloads
-    to be distinguishable. The prefix is what distinguishes them, so it belongs
-    to the runtime alone: ``_to_expr`` refuses a source literal that starts
-    with it, which makes the premise true rather than merely assumed.
-
-    Every classifier -- runtime, trace, views -- must ask here rather than
-    re-testing the prefix, so there is one answer to "is this a control value".
+    The one question every classifier asks -- runtime, trace, views. It reads
+    a type, not a spelling, so a user value can never answer yes.
     """
 
-    return isinstance(value, str) and value.startswith(_KAPPA_PREFIX)
-
-
-def reserved_control_prefix() -> str:
-    """The reserved prefix, for error messages that must quote it."""
-
-    return _KAPPA_PREFIX
+    return isinstance(value, ControlTag)
 
 
 def is_kappa_ctrl(expr) -> bool:
     """Return True for any per-construct control tag produced by make_kappa_ctrl."""
-    return isinstance(expr, LitExpr) and is_reserved_control_text(expr.value)
+    return isinstance(expr, LitExpr) and is_control_value(expr.value)
 
 
 def _canon_expr(e: "Expr") -> str:

@@ -531,49 +531,68 @@ def test_every_variable_the_author_wrote_is_counted_as_occupied():
 # The reserved control namespace
 # ---------------------------------------------------------------------------
 
-def test_a_source_literal_may_not_enter_the_reserved_namespace():
-    """The paper needs user and control payloads to be distinguishable.
+def test_no_user_value_boundary_can_produce_a_control_value():
+    """Disjointness is structural, not a spelling convention.
 
-    The prefix is what distinguishes them, so a source program may not produce
-    it. Refusing here makes the premise true instead of assumed -- previously
-    such a literal was accepted and every classifier then read the message as
-    a control broadcast and hid the payload from the trace.
+    The paper needs user payloads and control payloads to be distinguishable.
+    A reserved string prefix could not deliver that: every boundary that
+    admits a string admits the prefix too, so a workflow input or an action
+    output could always forge one. `ControlTag` is a distinct type that no
+    declarable coordination type matches.
     """
 
     from zippergen.builder import _to_expr
-    from zippergen.syntax import reserved_control_prefix
+    from zippergen.syntax import is_control_value, validate_zvalue
+    from zippergen.value_codec import ControlTag
 
-    with pytest.raises(ValueError, match="reserved"):
-        _to_expr(f"{reserved_control_prefix()}anything")
+    forgery = str(ControlTag("anything"))
 
-    # Ordinary strings, including near misses, are untouched.
-    assert _to_expr("hello").value == "hello"
-    assert _to_expr("κ_ctrl").value == "κ_ctrl"
+    # The literal boundary: a string stays a string.
+    assert not is_control_value(_to_expr(forgery).value)
+
+    # The runtime boundary, for every declarable coordination type.
+    for declared in (str, int, float, bool):
+        with pytest.raises(TypeError):
+            validate_zvalue(ControlTag("x"), declared)
+
+    # And the forged string is admitted as the ordinary string it is.
+    assert validate_zvalue(forgery, str) == forgery
+    assert not is_control_value(forgery)
 
 
-def test_one_predicate_answers_whether_a_value_is_control():
-    """No classifier may re-test the prefix for itself."""
+def test_a_control_value_survives_the_durable_boundary_as_itself():
+    """A stored control message must not decode into something forgeable."""
+
+    from zippergen.syntax import is_control_value
+    from zippergen.value_codec import ControlTag, dumps_value, loads_value
+
+    tag = ControlTag("construct-digest")
+    assert loads_value(dumps_value(tag)) == tag
+    assert is_control_value(loads_value(dumps_value(tag)))
+
+    # The same text, sent by a workflow, comes back a plain string.
+    text = str(tag)
+    assert loads_value(dumps_value(text)) == text
+    assert not is_control_value(loads_value(dumps_value(text)))
+
+
+def test_no_module_classifies_a_control_value_by_its_spelling():
+    """One question, asked of the type; never of the characters."""
 
     import pathlib
     import re
 
-    from zippergen.syntax import is_reserved_control_text, reserved_control_prefix
-
-    assert is_reserved_control_text(f"{reserved_control_prefix()}x")
-    assert not is_reserved_control_text("x")
-    assert not is_reserved_control_text(None)
-    assert not is_reserved_control_text(7)
-
     source_root = pathlib.Path(__file__).resolve().parents[1] / "src" / "zippergen"
-    literal = re.compile(re.escape(reserved_control_prefix()))
+    # Any comparison against the display prefix, in either quoting style.
+    spelling = re.compile(r"(?:startswith|==|in)\s*\(?\s*[\"']\u03ba_ctrl")
     offenders = [
         path.name
         for path in source_root.rglob("*.py")
-        if path.name != "syntax.py" and literal.search(path.read_text())
+        if spelling.search(path.read_text())
     ]
     assert not offenders, (
-        "these modules re-test the reserved prefix instead of asking "
-        f"is_reserved_control_text: {offenders}"
+        "these modules classify a control value by its spelling instead of "
+        f"asking is_control_value: {offenders}"
     )
 
 

@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import dataclass
 from typing import cast
 
 __all__ = [
+    "ControlTag",
     "decode_value",
     "dumps_value",
     "encode_value",
@@ -24,6 +26,34 @@ __all__ = [
     "loads_value",
     "portable_value_error",
 ]
+
+
+#: Shown to a person reading a projection or a trace; never parsed back.
+_KAPPA_DISPLAY = "\u03ba_ctrl_"
+
+
+@dataclass(frozen=True)
+class ControlTag:
+    """The reserved payload carried by a branch broadcast.
+
+    The paper's correctness argument needs user payloads and control payloads
+    to be disjoint. A reserved string *prefix* cannot establish that: every
+    user-value boundary accepts strings, so a workflow input or an action
+    output could always produce one, and every classifier had to guess from
+    content.
+
+    A distinct type makes the disjointness structural. No workflow can build
+    one: the builder produces only bool/int/float/str/Json literals, and
+    ``validate_zvalue`` admits a value only when its type is exactly the
+    declared coordination type -- and ``ControlTag`` is never declarable. It
+    round-trips as its own encoded kind, so the property holds across the
+    durable store too.
+    """
+
+    construct: str
+
+    def __str__(self) -> str:
+        return f"{_KAPPA_DISPLAY}{self.construct}"
 
 
 _ENVELOPE = "__zippergen_typed_value_v1__"
@@ -46,6 +76,12 @@ def portable_value_error(
     """
 
     value_type = type(value)
+    # A control tag is portable but is not a coordination value: it is the
+    # runtime's own payload, and it round-trips as its own kind so that a
+    # stored control message can never decode into something a workflow
+    # could have produced.
+    if value_type is ControlTag:
+        return None
     if value is None or value_type in {bool, int, str}:
         return None
     if value_type is float:
@@ -114,6 +150,8 @@ def json_value_error(value: object) -> str | None:
 
 def _encode(value: object) -> object:
     value_type = type(value)
+    if value_type is ControlTag:
+        return ["control", cast(ControlTag, value).construct]
     if value is None or value_type in {bool, int, float, str}:
         return ["scalar", value]
     if value_type is tuple:
@@ -144,6 +182,10 @@ def _decode(encoded: object, *, depth: int = 0) -> object:
     ):
         raise ValueError("Malformed encoded ZipperGen value.")
     kind, payload = encoded
+    if kind == "control":
+        if type(payload) is not str:
+            raise ValueError("Malformed control ZipperGen value.")
+        return ControlTag(payload)
     if kind == "scalar":
         if payload is None or type(payload) in {bool, int, float, str}:
             if type(payload) is float and not math.isfinite(cast(float, payload)):

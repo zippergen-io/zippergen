@@ -27,14 +27,14 @@ from zippergen.llm_policy import (
     retry_reporter,
 )
 from zippergen.syntax import (
-    is_reserved_control_text,
+    is_control_value,
+    is_kappa_ctrl,
     EmptyStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     ParallelStmt, ParallelLocalStmt,
     VarExpr, LitExpr, Var, Json,
     LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
-    is_kappa_ctrl,
     _clone_zvalue,
     _ordered_workflow_lifelines,
     seq,
@@ -154,7 +154,7 @@ def _format_mapping_lines(mapping: dict[str, object], *, width: int = 88) -> lis
 def _format_sequence_lines(values: list[object], *, width: int = 88) -> list[str]:
     lines: list[str] = []
     for idx, value in enumerate(values, start=1):
-        if is_reserved_control_text(value):
+        if is_control_value(value):
             continue
         rendered = _format_scalar(value)
         wrapped = textwrap.wrap(
@@ -177,7 +177,7 @@ def console_trace(event: dict) -> None:
     lines: list[str] | None = None
 
     if t == "send":
-        is_ctrl = any(is_reserved_control_text(v) for v in (event.get("values") or []))
+        is_ctrl = any(is_control_value(v) for v in (event.get("values") or []))
         lines = [f"[{lifeline}] {'control' if is_ctrl else 'send'} -> {event['to']}"]
         payload_lines = _format_sequence_lines(event.get("values") or [])
         if payload_lines:
@@ -322,6 +322,11 @@ def _jsonify(value: object) -> object:
         return value
     if isinstance(value, tuple):
         return [_jsonify(v) for v in value]
+    if is_control_value(value):
+        raise TypeError(
+            "A control payload must never be rendered into a trace: the "
+            "recorded event carries a 'control' flag instead."
+        )
     return str(value)
 
 
@@ -932,13 +937,24 @@ def _exec(
             else:
                 seq = ch.put(A.name, B.name, channel, values)
             if trace:
+                # Whether this is a control broadcast is known here, from the
+                # statement being executed. Recording the fact means no reader
+                # ever has to infer it from a payload's contents -- which is
+                # what let a user value impersonate one. Control payloads are
+                # the runtime's own and are not part of the recorded trace.
                 names = [x.var.name if isinstance(x, VarExpr) else f"_{i}" for i, x in enumerate(xs)]
+                visible = [
+                    (name, value)
+                    for name, expr, value in zip(names, xs, values)
+                    if not is_kappa_ctrl(expr)
+                ]
                 trace({
                     "type": "send",
                     "from": A.name, "to": B.name,
                     "channel": channel,
-                    "values": [_jsonify(v) for v in values],
-                    "bindings": {name: _jsonify(v) for name, v in zip(names, values)},
+                    "control": any(is_kappa_ctrl(expr) for expr in xs),
+                    "values": [_jsonify(value) for _name, value in visible],
+                    "bindings": {name: _jsonify(value) for name, value in visible},
                     "seq": seq,
                     **_monitor_trace_fields(monitor),
                 })

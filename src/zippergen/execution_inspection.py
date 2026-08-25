@@ -17,7 +17,6 @@ from zippergen.store import list_role_states, open_store_readonly
 from zippergen.syntax import (
     Workflow,
     _ordered_workflow_lifelines,
-    is_reserved_control_text,
 )
 from zippergen.view import describe_local_statement
 
@@ -228,15 +227,22 @@ def _trace_value(value: object, *, limit: int = 120) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _control_values(values: object) -> tuple[bool, list[object]]:
-    if not isinstance(values, list):
+def _control_values(event: object) -> tuple[bool, list[object]]:
+    """Is this a control broadcast, and what did it carry that a person sent?
+
+    The answer is read from the event, never inferred from the payload. The
+    runtime knows which sends are control broadcasts -- it is executing the
+    statement -- and records that, so no reader has to guess from a value's
+    contents. Guessing is what once let an ordinary workflow string be
+    classified as control and dropped from the trace.
+
+    An event with no flag is an ordinary send, and its payload is shown.
+    """
+
+    if not isinstance(event, dict):
         return False, []
-    is_control = any(is_reserved_control_text(value) for value in values)
-    visible: list[object] = []
-    for value in values:
-        if not is_reserved_control_text(value):
-            visible.append(value)
-    return is_control, visible
+    values = event.get("values")
+    return bool(event.get("control")), values if isinstance(values, list) else []
 
 
 def _trace_row(
@@ -256,7 +262,7 @@ def _trace_row(
         source = event.get("from", role)
         target = event.get("to", "?")
         channel = event.get("channel") or "-"
-        control, visible_values = _control_values(event.get("values"))
+        control, visible_values = _control_values(event)
         if control:
             detail = f"{source} → {target} [{channel}]"
             if visible_values:

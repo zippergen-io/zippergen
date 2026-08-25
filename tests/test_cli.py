@@ -3120,19 +3120,46 @@ def test_trace_command_renders_control_messages_without_internal_tags(
             "from": "Mailbox",
             "to": "Extractor",
             "channel": "main",
-            "values": [True, "κ_ctrl_internal"],
+            # What the runtime records: the fact that this was a control
+            # broadcast, and only the payload a person would recognise.
+            "control": True,
+            "values": [True],
+        },
+    )
+    forged_id = record_history(
+        conn,
+        "Mailbox",
+        {
+            "type": "send",
+            "from": "Mailbox",
+            "to": "Extractor",
+            "channel": "main",
+            # A workflow value that merely looks like one. It is an ordinary
+            # send and its payload belongs in the trace.
+            "values": [True, "\u03ba_ctrl_internal"],
+            "bindings": {"flag": True, "note": "\u03ba_ctrl_internal"},
         },
     )
     conn.close()
 
-    assert main(["deploy", "trace", "--tail", "1"]) == 0
+    assert main(["deploy", "trace", "--tail", "2"]) == 0
 
     output = capsys.readouterr().out
     assert f"#{event_id}" in output
     assert "control send" in output
     assert "Mailbox → Extractor [main]" in output
     assert "value=true" in output
-    assert "κ_ctrl_internal" not in output
+
+    # The control row carries no tag: the runtime never recorded one, because
+    # the fact is in the event rather than in the payload.
+    control_row = next(line for line in output.splitlines() if "control send" in line)
+    assert "\u03ba_ctrl" not in control_row
+
+    # The look-alike is an ordinary workflow value and stays visible.
+    assert f"#{forged_id}" in output
+    assert "\u03ba_ctrl_internal" in output, (
+        "a workflow value that resembles a control tag must not be hidden"
+    )
 
 
 def test_trace_command_marks_legacy_events_without_a_timestamp(
