@@ -39,7 +39,12 @@ from zippergen.errors import WorkflowCancelled
 from zippergen.value_codec import decode_value, dumps_value, encode_value, loads_value
 
 
-SCHEMA_VERSION = 3
+# 4: control payloads are a distinct encoded kind rather than a reserved
+#    string. A store written by an earlier version holds in-flight control
+#    messages as plain strings, which this version's receivers will not match
+#    -- so such a store is refused at open rather than failing deep inside a
+#    resumed run.
+SCHEMA_VERSION = 4
 
 # How many history rows a store keeps when it does not say otherwise. History is
 # optional and recovery never reads it, so this is a retention choice, not a
