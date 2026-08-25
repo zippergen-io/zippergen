@@ -605,6 +605,7 @@ configurations, participants, actions, and connector requirements.
 | [`examples/inbox_triage.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/inbox_triage.py) | Gmail in, Sheets out, deployed as a supervised service |
 | [Your first ZipperGen workflow](https://github.com/zippergen-io/zippergen/blob/main/docs/first-workflow.pdf) | the tutorial |
 | [Development and deployment guide](https://github.com/zippergen-io/zippergen/blob/main/docs/workflow-development-deployment-guide.pdf) | the long reference |
+| [Architecture](https://github.com/zippergen-io/zippergen/blob/main/docs/architecture.md) | layers, module boundaries, and which constructs each theorem covers |
 | [Durable storage](https://github.com/zippergen-io/zippergen/blob/main/docs/durable-storage.md) | current-state recovery, crash guarantees, identity, and history retention |
 | [Workflow authoring skill](https://github.com/zippergen-io/zippergen/blob/main/.agents/skills/zippergen-workflows/SKILL.md) | what a coding agent follows, also printed by `zippergen skill` |
 | [Changelog](https://github.com/zippergen-io/zippergen/blob/main/CHANGELOG.md) | release notes and upgrade-visible changes |
