@@ -148,7 +148,7 @@ from zippergen.semantic import (
     semantic_snapshot,
     workflow_semantics,
 )
-from zippergen.syntax import Workflow
+from zippergen.syntax import Workflow, is_reserved_control_text
 from zippergen.store import (
     complete_human_task,
     ensure_human_task_token,
@@ -1064,13 +1064,10 @@ def _trace_fields(value: object) -> str:
 def _control_values(values: object) -> tuple[bool, list[object]]:
     if not isinstance(values, list):
         return False, []
-    is_control = any(
-        isinstance(value, str) and value.startswith("κ_ctrl_")
-        for value in values
-    )
+    is_control = any(is_reserved_control_text(value) for value in values)
     visible: list[object] = []
     for value in values:
-        if not (isinstance(value, str) and value.startswith("κ_ctrl_")):
+        if not is_reserved_control_text(value):
             visible.append(value)
     return is_control, visible
 
@@ -3727,6 +3724,7 @@ def _connector_configure_command(args) -> int:
     from the provider identity and credential shared by configurations.
     """
 
+    from zippergen.provider_connections import connector_kinds_for_provider
     from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(args.project)
@@ -3750,11 +3748,7 @@ def _connector_configure_command(args) -> int:
     )
     provider_profile = workspace.provider_connections().get(connection) or {}
     provider = str(provider_profile.get("kind") or "")
-    supported = (
-        ("telegram",)
-        if provider == "telegram"
-        else (("gmail", "google-sheets") if provider == "google" else ())
-    )
+    supported = connector_kinds_for_provider(provider)
     if not supported:
         raise WorkspaceError(
             f"Provider connection {connection!r} ({provider or 'unknown'}) "

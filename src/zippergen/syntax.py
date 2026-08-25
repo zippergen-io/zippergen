@@ -257,9 +257,30 @@ def make_kappa_ctrl(construct_key: str) -> LitExpr:
     return LitExpr(f"{_KAPPA_PREFIX}{construct_key}", str)
 
 
+def is_reserved_control_text(value: object) -> bool:
+    """Return True for any string inside the runtime's reserved namespace.
+
+    The paper's correctness argument needs user payloads and control payloads
+    to be distinguishable. The prefix is what distinguishes them, so it belongs
+    to the runtime alone: ``_to_expr`` refuses a source literal that starts
+    with it, which makes the premise true rather than merely assumed.
+
+    Every classifier -- runtime, trace, views -- must ask here rather than
+    re-testing the prefix, so there is one answer to "is this a control value".
+    """
+
+    return isinstance(value, str) and value.startswith(_KAPPA_PREFIX)
+
+
+def reserved_control_prefix() -> str:
+    """The reserved prefix, for error messages that must quote it."""
+
+    return _KAPPA_PREFIX
+
+
 def is_kappa_ctrl(expr) -> bool:
     """Return True for any per-construct control tag produced by make_kappa_ctrl."""
-    return isinstance(expr, LitExpr) and isinstance(expr.value, str) and expr.value.startswith(_KAPPA_PREFIX)
+    return isinstance(expr, LitExpr) and is_reserved_control_text(expr.value)
 
 
 def _canon_expr(e: "Expr") -> str:
@@ -1071,6 +1092,82 @@ def participation_set(stmt: AnyStmt) -> frozenset[Lifeline]:
             return frozenset({a, b}) | participation_set(p1) | participation_set(p2)
         case WhileRecvStmt(lifeline=a, sender=b, body=p, exit_body=q):
             return frozenset({a, b}) | participation_set(p) | participation_set(q)
+        case _:
+            raise TypeError(f"Unknown statement type: {type(stmt).__name__}")
+
+
+def occurring_variables(stmt: AnyStmt) -> frozenset[str]:
+    """Compute the names of every variable occurring in a statement.
+
+    V(e)                        = names bound or read anywhere in the program
+
+    Projection introduces receive-guard variables, and the paper requires each
+    to be fresh -- not occurring in P. Freshness is therefore a property of the
+    whole program, so the occupied names have to be collected before any name
+    is generated. Without this, a generated ``_ctrl1`` silently overwrites a
+    user variable of the same name and the receiver branches on the wrong
+    value, with no error anywhere.
+
+    Conditions are Python callables and cannot be inspected, but a variable a
+    condition reads must have been bound by an action output or a message
+    binding to hold a value at all -- so it is already counted here.
+    """
+
+    def _names(exprs) -> frozenset[str]:
+        found: set[str] = set()
+        for expr in exprs:
+            if isinstance(expr, VarExpr):
+                found.add(expr.var.name)
+            elif isinstance(expr, Var):
+                found.add(expr.name)
+        return frozenset(found)
+
+    match stmt:
+        case EmptyStmt() | SkipStmt():
+            return frozenset()
+        case MsgStmt(payload=payload, bindings=bindings):
+            return _names(payload) | _names(bindings)
+        case CoregionStmt(messages=messages):
+            gathered: frozenset[str] = frozenset()
+            for msg in messages:
+                gathered |= occurring_variables(msg)
+            return gathered
+        case ActStmt(inputs=inputs, outputs=outputs):
+            return _names(inputs) | _names(outputs)
+        case SeqStmt(first=p1, second=p2):
+            return occurring_variables(p1) | occurring_variables(p2)
+        case IfStmt(branch_true=p1, branch_false=p2):
+            return occurring_variables(p1) | occurring_variables(p2)
+        case WhileStmt(body=p, exit_body=q):
+            return occurring_variables(p) | occurring_variables(q)
+        case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
+            in_branches: frozenset[str] = frozenset()
+            for branch in branches:
+                in_branches |= occurring_variables(branch)
+            return in_branches
+        case SendStmt(payload=payload):
+            return _names(payload)
+        case RecvStmt(bindings=bindings):
+            return _names(bindings)
+        case ReceiveAnyStmt(receives=receives):
+            from_any: frozenset[str] = frozenset()
+            for _sender, bindings in receives:
+                from_any |= _names(bindings)
+            return from_any
+        case SelfAssignStmt(payload=payload, bindings=bindings):
+            return _names(payload) | _names(bindings)
+        case IfRecvStmt(bindings=bindings, branch_true=p1, branch_false=p2):
+            return (
+                _names(bindings)
+                | occurring_variables(p1)
+                | occurring_variables(p2)
+            )
+        case WhileRecvStmt(bindings=bindings, body=p, exit_body=q):
+            return (
+                _names(bindings)
+                | occurring_variables(p)
+                | occurring_variables(q)
+            )
         case _:
             raise TypeError(f"Unknown statement type: {type(stmt).__name__}")
 

@@ -28,6 +28,45 @@ def test_every_declared_kind_can_be_configured_from_the_command_line() -> None:
         assert namespace.kind == kind
 
 
+def test_every_declared_kind_is_offered_by_the_interactive_command() -> None:
+    """The path a person actually takes, not only the parser.
+
+    `zg connector configure` picks the kinds for a chosen provider. It used to
+    write that mapping out by hand, so a new kind passed every test here and
+    was still refused at the prompt.
+    """
+
+    from zippergen.provider_connections import (
+        connector_kinds_for_provider,
+        providers_serving_connectors,
+    )
+
+    offered: set[str] = set()
+    for provider in providers_serving_connectors():
+        offered |= set(connector_kinds_for_provider(provider))
+    assert offered == set(CONNECTOR_KINDS)
+
+
+def test_no_module_writes_the_provider_mapping_out_by_hand() -> None:
+    """One statement of provider-to-connector compatibility, not four."""
+
+    import pathlib
+    import re
+
+    source_root = pathlib.Path(__file__).resolve().parents[1] / "src" / "zippergen"
+    pair = re.compile(r'"gmail",\s*"google-sheets"')
+    offenders = [
+        path.name
+        for path in source_root.rglob("*.py")
+        if path.name not in {"provider_connections.py", "connectors.py"}
+        and pair.search(path.read_text())
+    ]
+    assert not offenders, (
+        "these modules rebuild the provider mapping instead of asking "
+        f"connector_kinds_for_provider: {offenders}"
+    )
+
+
 def test_every_declared_kind_is_rendered_as_a_route() -> None:
     assert set(CONNECTOR_KINDS) <= set(CONNECTOR_ROUTE_KINDS)
 

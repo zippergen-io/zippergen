@@ -615,6 +615,12 @@ The main result says that the projected local programs behave exactly like the
 global workflow. Freedom from deadlock follows from this, for well-formed
 workflows in the supported model.
 
+The proved constructs are message, action, skip, sequence, `if`, and `while`
+(ISoLA paper), plus the parallel operator (EXPRESS/SOS paper). `with coregion:`
+is implemented and tested but is **not** covered by a published result yet --
+the ISoLA paper lists coregions as future work. Use it where a relaxed
+reception order is what you want; do not rely on it for the guarantee above.
+
 The core projection theorems are
 [machine-checked in Lean 4](https://github.com/zippergen-io/zippergen-lean/tree/main/isola).
 The parallel extension is established separately in the EXPRESS/SOS paper.

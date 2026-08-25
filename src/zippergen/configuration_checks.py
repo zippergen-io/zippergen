@@ -15,6 +15,7 @@ from zippergen.connectors import connector_requirements_from_module
 from zippergen.google_auth import google_support_installed
 from zippergen.models import ModelSettings, selected_llm_specs
 from zippergen.provider_connections import (
+    connector_kinds_for_provider,
     provider_credential_field,
     provider_credential_label,
     provider_standard_environment,
@@ -620,7 +621,7 @@ def _append_live_connector_checks(
         connection = str(configuration.get("connection") or "")
         if (
             bindings.get(item.name) in used
-            and item.kind in {"gmail", "google-sheets"}
+            and item.kind in connector_kinds_for_provider("google")
             and connection
         ):
             google_pairs.setdefault(connection, []).append(
@@ -632,7 +633,7 @@ def _append_live_connector_checks(
         connection = str(configuration.get("connection") or "")
         pair = (str(kind), "read-only")
         pairs = google_pairs.setdefault(connection, []) if connection else []
-        if kind in {"gmail", "google-sheets"} and pair not in pairs:
+        if kind in connector_kinds_for_provider("google") and pair not in pairs:
             pairs.append(pair)
     for connection, pairs in sorted(google_pairs.items()):
         credential = workspace.provider_secret(connection, "authorized_user_json")

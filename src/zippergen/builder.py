@@ -14,6 +14,8 @@ from typing import cast
 
 from zippergen.formula import __all__ as _FORMULA_NAMES
 from zippergen.syntax import (
+    is_reserved_control_text,
+    reserved_control_prefix,
     ZType, Json, Lifeline, Var,
     ZTypeAtLifeline,
     Expr, VarExpr, LitExpr,
@@ -106,6 +108,13 @@ def _to_expr(x: object) -> Expr:
     if isinstance(x, float):
         return LitExpr(x, float)
     if isinstance(x, str):
+        if is_reserved_control_text(x):
+            raise ValueError(
+                f"String literals may not start with {reserved_control_prefix()!r}: "
+                f"{x!r}. That prefix is reserved for the control messages "
+                "projection generates, and a workflow value carrying it could "
+                "not be told apart from one."
+            )
         return LitExpr(x, str)
     if x is None or type(x) in {list, dict}:
         if not is_json_value(x):

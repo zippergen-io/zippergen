@@ -139,7 +139,9 @@ def completion_candidates(
 
         return list(PROVIDER_KINDS)
     if kind == "connector-kinds":
-        return ["telegram", "gmail", "google-sheets"]
+        from zippergen.connectors import CONNECTOR_KINDS
+
+        return list(CONNECTOR_KINDS)
     if kind == "options":
         return _option_candidates(path)
     try:
@@ -155,10 +157,14 @@ def completion_candidates(
                 if provider_supports_models(values.get("kind"))
             )
         if kind == "provider-connections-connector":
+            from zippergen.provider_connections import (
+                providers_serving_connectors,
+            )
+
             return sorted(
                 name
                 for name, values in workspace.provider_connections().items()
-                if values.get("kind") in {"telegram", "google"}
+                if values.get("kind") in providers_serving_connectors()
             )
         if kind == "provider-connections-google":
             return sorted(

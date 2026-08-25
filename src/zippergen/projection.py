@@ -13,7 +13,8 @@ from zippergen.syntax import (
     SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, IfRecvStmt, WhileRecvStmt,
     ParallelLocalStmt,
     Lifeline, LocalStmt, AnyStmt, Var, VarExpr, LitExpr,
-    make_kappa_ctrl, canonical_construct_key, participation_set, seq,
+    make_kappa_ctrl, canonical_construct_key, participation_set,
+    occurring_variables, seq,
     Workflow,
 )
 
@@ -48,10 +49,30 @@ def _ctrl_sends(
     return [SendStmt(owner, (lit, tag), C, channel) for C in receivers]
 
 
-def _fresh_ctrl(counter: list[int]) -> Var:
-    """Allocate a fresh Bool variable _ctrl1, _ctrl2, … for a receive-guard."""
-    counter[0] += 1
-    return Var(f"_ctrl{counter[0]}", bool)
+class _ControlVariables:
+    """Allocates the receive-guard variables _ctrl1, _ctrl2, … for one lifeline.
+
+    The paper requires each generated variable to be fresh -- not occurring in
+    P. Freshness is a property of the whole program, not of the allocation
+    order, so the occupied names are collected once up front and every
+    generated name skips them. A counter alone is not enough: an author may
+    write a variable called ``_ctrl1``, and binding the received branch
+    decision over it changes the receiver's value with no error anywhere.
+
+    Allocation stays deterministic, so every process projecting the same
+    workflow generates the same names.
+    """
+
+    def __init__(self, occupied: frozenset[str]) -> None:
+        self._occupied = occupied
+        self._issued = 0
+
+    def fresh(self) -> Var:
+        while True:
+            self._issued += 1
+            name = f"_ctrl{self._issued}"
+            if name not in self._occupied:
+                return Var(name, bool)
 
 
 def _parallel_channel(stmt: ParallelStmt, branch_index: int, parent_channel: str) -> str:
@@ -67,7 +88,7 @@ def _parallel_channel(stmt: ParallelStmt, branch_index: int, parent_channel: str
 # Core projection — structural recursion on Stmt
 # ---------------------------------------------------------------------------
 
-def _project(stmt: AnyStmt, A: Lifeline, counter: list[int], channel: str = "main") -> LocalStmt:
+def _project(stmt: AnyStmt, A: Lifeline, counter: _ControlVariables, channel: str = "main") -> LocalStmt:
     """π_A(stmt) — one step of the structural recursion."""
 
     match stmt:
@@ -146,7 +167,7 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: list[int], channel: str = "mai
                 )
             elif A in frozenset(r_if):
                 # Receiver: wait for B's decision, branch accordingly.
-                ctrl = _fresh_ctrl(counter)
+                ctrl = counter.fresh()
                 return IfRecvStmt(
                     lifeline=A,
                     bindings=(VarExpr(ctrl), tag),
@@ -179,7 +200,7 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: list[int], channel: str = "mai
                 )
             elif A in frozenset(r_while):
                 # Receiver: loop decision comes from B each iteration.
-                ctrl = _fresh_ctrl(counter)
+                ctrl = counter.fresh()
                 return WhileRecvStmt(
                     lifeline=A,
                     bindings=(VarExpr(ctrl), tag),
@@ -207,4 +228,13 @@ def project(wf: Workflow, lifeline: Lifeline) -> LocalStmt:
     The result is a faithful implementation of  π_lifeline(wf.body)
     as defined in the paper.
     """
-    return _project(wf.body, lifeline, [0])
+    # Every name the author used, so no generated control variable can land on
+    # one. Declared inputs and locals are included even when the body never
+    # mentions them: they still occupy the lifeline's environment.
+    occupied = (
+        occurring_variables(wf.body)
+        | {name for name, _type, _lifeline in wf.inputs}
+        | {var.name for var in wf.vars}
+        | {var.name for var, _lifeline in wf.outputs}
+    )
+    return _project(wf.body, lifeline, _ControlVariables(frozenset(occupied)))

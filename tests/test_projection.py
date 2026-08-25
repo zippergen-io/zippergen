@@ -4,7 +4,10 @@ IR nodes are constructed directly — no builder — so these tests are
 independent of Layer 3 and test projection semantics in isolation.
 """
 
+import pytest
+
 from zippergen.syntax import (
+    occurring_variables,
     EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt,
     SendStmt, RecvStmt, ReceiveAnyStmt, IfRecvStmt, WhileRecvStmt, ParallelLocalStmt,
@@ -13,6 +16,7 @@ from zippergen.syntax import (
 )
 from zippergen.actions import pure
 from zippergen.projection import project
+from zippergen.builder import workflow
 
 
 # ---------------------------------------------------------------------------
@@ -414,3 +418,160 @@ def test_project_while_bystander():
     wf = _make_workflow(stmt)
 
     assert project(wf, C) == EmptyStmt()
+
+
+# ---------------------------------------------------------------------------
+# Freshness of generated control variables
+# ---------------------------------------------------------------------------
+
+def test_generated_control_variables_avoid_names_the_author_used():
+    """The paper requires each generated variable not to occur in P.
+
+    Counting alone is not freshness. An author may write ``_ctrl1``; binding
+    the received branch decision over it changed the receiver's own value and
+    branched on the wrong one, with no error raised anywhere.
+    """
+
+    from zippergen.syntax import occurring_variables
+    from zippergen.projection import _ControlVariables
+
+    occupied = frozenset({"_ctrl1", "_ctrl2", "_ctrl4"})
+    allocator = _ControlVariables(occupied)
+    issued = [allocator.fresh().name for _ in range(3)]
+
+    assert issued == ["_ctrl3", "_ctrl5", "_ctrl6"]
+    assert not set(issued) & occupied
+
+
+# `@workflow` reads the defining source, so these live at module level --
+# and each Python name must equal its Var name, because a condition is
+# resolved by the name as written in the source.
+
+_A = Lifeline("A")
+_B = Lifeline("B")
+_ctrl1 = Var("_ctrl1", bool)
+go = Var("go", bool)
+out = Var("out", str)
+
+
+@pure
+def _decide_true() -> bool:
+    return True
+
+
+@pure
+def _carry_false() -> bool:
+    return False
+
+
+@pure
+def _report_ctrl(_ctrl1: bool) -> str:
+    return f"_ctrl1={_ctrl1}"
+
+
+@workflow
+def _collides() -> str:
+    _A: go = _decide_true()
+    _B: _ctrl1 = _carry_false()
+    if go @ _A:
+        _A(go) >> _B(go)
+    _B: out = _report_ctrl(_ctrl1)
+    return out @ _B
+
+
+def test_a_user_variable_named_like_a_control_variable_survives_projection():
+    """End to end: the receiver must read back the value it wrote."""
+
+    assert "_ctrl1" in occurring_variables(_collides.body)
+    assert _collides() == "_ctrl1=False"
+
+
+sent = Var("sent", str)
+got = Var("got", str)
+decided = Var("decided", bool)
+looped = Var("looped", str)
+
+
+@pure
+def _make_x() -> str:
+    return "x"
+
+
+@pure
+def _decide_false() -> bool:
+    return False
+
+
+@pure
+def _touch(got: str) -> str:
+    return got
+
+
+@workflow
+def _many() -> str:
+    _A: sent = _make_x()
+    _A: decided = _decide_false()
+    _A(sent) >> _B(got)
+    while decided @ _A:
+        _A: decided = _decide_false()
+    else:
+        _B: looped = _touch(got)
+    return looped @ _B
+
+
+def test_every_variable_the_author_wrote_is_counted_as_occupied():
+    """A name missed by the collector is a name a control variable can land on."""
+
+    names = occurring_variables(_many.body)
+    for expected in ("sent", "got", "decided", "looped"):
+        assert expected in names, f"{expected} was not counted as occupied"
+
+
+# ---------------------------------------------------------------------------
+# The reserved control namespace
+# ---------------------------------------------------------------------------
+
+def test_a_source_literal_may_not_enter_the_reserved_namespace():
+    """The paper needs user and control payloads to be distinguishable.
+
+    The prefix is what distinguishes them, so a source program may not produce
+    it. Refusing here makes the premise true instead of assumed -- previously
+    such a literal was accepted and every classifier then read the message as
+    a control broadcast and hid the payload from the trace.
+    """
+
+    from zippergen.builder import _to_expr
+    from zippergen.syntax import reserved_control_prefix
+
+    with pytest.raises(ValueError, match="reserved"):
+        _to_expr(f"{reserved_control_prefix()}anything")
+
+    # Ordinary strings, including near misses, are untouched.
+    assert _to_expr("hello").value == "hello"
+    assert _to_expr("κ_ctrl").value == "κ_ctrl"
+
+
+def test_one_predicate_answers_whether_a_value_is_control():
+    """No classifier may re-test the prefix for itself."""
+
+    import pathlib
+    import re
+
+    from zippergen.syntax import is_reserved_control_text, reserved_control_prefix
+
+    assert is_reserved_control_text(f"{reserved_control_prefix()}x")
+    assert not is_reserved_control_text("x")
+    assert not is_reserved_control_text(None)
+    assert not is_reserved_control_text(7)
+
+    source_root = pathlib.Path(__file__).resolve().parents[1] / "src" / "zippergen"
+    literal = re.compile(re.escape(reserved_control_prefix()))
+    offenders = [
+        path.name
+        for path in source_root.rglob("*.py")
+        if path.name != "syntax.py" and literal.search(path.read_text())
+    ]
+    assert not offenders, (
+        "these modules re-test the reserved prefix instead of asking "
+        f"is_reserved_control_text: {offenders}"
+    )

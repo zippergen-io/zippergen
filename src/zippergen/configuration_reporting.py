@@ -25,6 +25,7 @@ from zippergen.configuration_inventory import (
     _project_model_source,
 )
 from zippergen.connectors import connector_requirements_from_module
+from zippergen.deployment import DeploymentSpec, deployment_spec_from_module
 from zippergen.models import project_model_routing
 from zippergen.provider_connections import (
     provider_credential_field,
@@ -350,7 +351,7 @@ def _effective_routing(
 
 def _configuration_rows(
     workspace: Workspace,
-    module: ModuleType | None,
+    declaration: DeploymentSpec | None,
 ) -> list[dict[str, object]]:
     """The project's answers to its workflow's declared questions.
 
@@ -360,20 +361,17 @@ def _configuration_rows(
     the project that authored it.
     """
 
-    from zippergen.deployment import deployment_spec_from_module
-
     stored = workspace.configuration_values()
-    if module is None:
+    if declaration is None:
+        # Either there is no module, or its declaration failed to parse. The
+        # failure is already a reported check; here the stored answers are
+        # still worth showing, since they are the project's own values.
         return [
             {"name": name, "value": value, "declared": False}
             for name, value in sorted(stored.items())
         ]
-    try:
-        spec = deployment_spec_from_module(module)
-    except Exception:
-        return []
     rows: list[dict[str, object]] = []
-    for field in spec.fields:
+    for field in declaration.fields:
         rows.append({
             "name": field.name,
             "prompt": field.prompt,
@@ -444,6 +442,24 @@ def configuration_report(
         "settings": {},
     }
     checks: list[Check] = []
+    # The declaration is parsed once, here, because this is the only place that
+    # can report a failure. Parsing it inside a row-builder meant a malformed
+    # declaration became "no configuration fields" -- the operator saw a
+    # workflow that asks nothing and never learned why.
+    declaration: DeploymentSpec | None = None
+    if module is not None:
+        try:
+            declaration = deployment_spec_from_module(module)
+        except Exception as exc:
+            checks.append(
+                _check(
+                    "fail",
+                    "deployment declaration",
+                    f"{type(exc).__name__}: {exc}",
+                    scopes=("configuration",),
+                    fix="Fix zippergen_deployment in the workflow module.",
+                )
+            )
     for item in model_rows:
         if item.get("temperature") is not None and not model_accepts_temperature(
             str(item.get("spec") or "")
@@ -638,7 +654,7 @@ def configuration_report(
             "workflow": workflow_spec,
             "specification": str(workspace.specification_path),
         },
-        "configuration": _configuration_rows(workspace, module),
+        "configuration": _configuration_rows(workspace, declaration),
         "providers": {"connections": provider_rows},
         "models": {
             "configurations": model_rows,

@@ -361,11 +361,16 @@ def _zippergen_install_requirement(
                 if extras
                 else origin
             )
-        try:
-            from importlib.metadata import version
+        from importlib.metadata import PackageNotFoundError, version
 
+        try:
             requirement = f"zippergen=={version('zippergen')}"
-        except Exception:
+        except PackageNotFoundError:
+            # Nothing to pin to: this copy is not an installed distribution.
+            # Any other failure means the metadata is there but unreadable,
+            # and an unpinned requirement would quietly install a different
+            # ZipperGen than the one these checks ran against -- so it is
+            # raised rather than hidden behind an immutable-release promise.
             requirement = "zippergen"
     if not extras:
         return requirement

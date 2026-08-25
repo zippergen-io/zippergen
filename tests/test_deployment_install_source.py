@@ -143,3 +143,40 @@ def test_an_installed_copy_with_no_origin_falls_back_to_a_version(
         de.Path, "exists", lambda _self: False, raising=False
     )
     assert de._zippergen_install_requirement().startswith("zippergen==")
+
+
+def test_unreadable_metadata_is_raised_rather_than_silently_unpinned(
+    monkeypatch,
+) -> None:
+    """An unpinned requirement would break the immutable-release promise.
+
+    A deployment names ZipperGen so its environment can install it. If the
+    version cannot be read because the metadata is damaged, installing an
+    unpinned ``zippergen`` fetches whatever is newest -- not what these checks
+    just validated. Only a genuinely absent distribution may fall back.
+    """
+
+    import importlib.metadata
+
+    monkeypatch.setattr(de, "_installed_zippergen_origin", lambda: None)
+    monkeypatch.setattr(de.Path, "exists", lambda _self: False, raising=False)
+
+    def damaged(_name):
+        raise ValueError("metadata is not valid")
+
+    monkeypatch.setattr(importlib.metadata, "version", damaged)
+    with pytest.raises(ValueError, match="metadata is not valid"):
+        de._zippergen_install_requirement()
+
+
+def test_an_absent_distribution_still_falls_back(monkeypatch) -> None:
+    import importlib.metadata
+
+    monkeypatch.setattr(de, "_installed_zippergen_origin", lambda: None)
+    monkeypatch.setattr(de.Path, "exists", lambda _self: False, raising=False)
+
+    def missing(_name):
+        raise importlib.metadata.PackageNotFoundError("zippergen")
+
+    monkeypatch.setattr(importlib.metadata, "version", missing)
+    assert de._zippergen_install_requirement() == "zippergen"

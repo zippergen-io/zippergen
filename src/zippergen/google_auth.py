@@ -157,9 +157,12 @@ def google_scopes_for_access(
 ) -> tuple[str, ...]:
     """Plan minimal scopes for ``(kind, access)`` requirement pairs."""
 
+    from zippergen.provider_connections import connector_kinds_for_provider
+
+    google_kinds = connector_kinds_for_provider("google")
     strongest: dict[str, str] = {}
     for kind, access in requirements:
-        if kind not in {"gmail", "google-sheets"}:
+        if kind not in google_kinds:
             continue
         previous = strongest.get(kind)
         if previous in {"write", "read-write"}:

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 
+from zippergen.connectors import CONNECTOR_KINDS
+
 
 # ``mock`` is a runtime backend, not a configurable external connection, so it
 # is accepted by the model-spec parser but deliberately absent from this list.
@@ -66,6 +68,28 @@ def canonical_provider_kind(value: object) -> str:
 
 def provider_supports_models(kind: object) -> bool:
     return canonical_provider_kind(kind) in _MODEL_KINDS
+
+
+def connector_kinds_for_provider(kind: object) -> tuple[str, ...]:
+    """The connector kinds one provider serves, in display order.
+
+    This is the only statement of provider-to-connector compatibility. Every
+    place that offers, filters, or validates a kind asks here -- otherwise a
+    new kind can be accepted by the parser and rejected by the interactive
+    command, which is exactly what happened when this was written out by hand
+    in three places.
+    """
+
+    served = _CONNECTOR_KINDS.get(str(kind or "").strip(), frozenset())
+    return tuple(name for name in CONNECTOR_KINDS if name in served)
+
+
+def providers_serving_connectors() -> frozenset[str]:
+    """Provider kinds that serve at least one connector kind."""
+
+    return frozenset(
+        name for name, served in _CONNECTOR_KINDS.items() if served
+    )
 
 
 def provider_supports_connector(kind: object, connector_kind: object) -> bool:

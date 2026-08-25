@@ -27,6 +27,7 @@ from zippergen.llm_policy import (
     retry_reporter,
 )
 from zippergen.syntax import (
+    is_reserved_control_text,
     EmptyStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     ParallelStmt, ParallelLocalStmt,
@@ -153,7 +154,7 @@ def _format_mapping_lines(mapping: dict[str, object], *, width: int = 88) -> lis
 def _format_sequence_lines(values: list[object], *, width: int = 88) -> list[str]:
     lines: list[str] = []
     for idx, value in enumerate(values, start=1):
-        if isinstance(value, str) and value.startswith("κ_ctrl_"):
+        if is_reserved_control_text(value):
             continue
         rendered = _format_scalar(value)
         wrapped = textwrap.wrap(
@@ -176,7 +177,7 @@ def console_trace(event: dict) -> None:
     lines: list[str] | None = None
 
     if t == "send":
-        is_ctrl = any(isinstance(v, str) and v.startswith("κ_ctrl_") for v in (event.get("values") or []))
+        is_ctrl = any(is_reserved_control_text(v) for v in (event.get("values") or []))
         lines = [f"[{lifeline}] {'control' if is_ctrl else 'send'} -> {event['to']}"]
         payload_lines = _format_sequence_lines(event.get("values") or [])
         if payload_lines:

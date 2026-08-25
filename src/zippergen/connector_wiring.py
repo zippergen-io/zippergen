@@ -21,7 +21,10 @@ from typing import Any
 from zippergen.semantic import workflow_semantics
 from zippergen.syntax import Workflow, _ordered_workflow_lifelines
 from zippergen.workspace import Workspace
-from zippergen.provider_connections import provider_environment_name
+from zippergen.provider_connections import (
+    connector_kinds_for_provider,
+    provider_environment_name,
+)
 
 
 class ConnectorWiringError(RuntimeError):
@@ -78,7 +81,7 @@ def _check_google_authorization(
     for item in requirements:
         configuration = configurations.get(bindings.get(item.name, ""), {})
         connection = str(configuration.get("connection") or "")
-        if connection and item.kind in {"gmail", "google-sheets"}:
+        if connection and item.kind in connector_kinds_for_provider("google"):
             by_connection.setdefault(connection, []).append((item.kind, item.access))
 
     profiles = workspace.provider_connections()
