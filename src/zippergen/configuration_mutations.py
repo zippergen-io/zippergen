@@ -369,10 +369,8 @@ def _assign_human_action(
                 f"{configuration!r} is "
                 f"{selected_configuration.get('kind') or 'untyped'}."
             )
-    manifest_connectors = workspace.project_manifest().get("connectors") or {}
-    assert isinstance(manifest_connectors, dict)
+    manifest_connectors = workspace.project_manifest()["connectors"]
     profile = manifest_connectors.get("assignments") or {}
-    assert isinstance(profile, dict)
     default = str(profile.get("default") or "")
     lifelines = dict(profile.get("lifelines") or {})
     actions = dict(profile.get("actions") or {})

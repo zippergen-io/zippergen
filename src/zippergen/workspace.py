@@ -26,6 +26,9 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
 
+from collections.abc import Mapping
+from typing import TypeVar, TypedDict, cast
+
 from zippergen.value_codec import decode_value, encode_value
 from zippergen.assistant_backends import ASSISTANT_BACKENDS
 
@@ -553,12 +556,87 @@ def _named_string_tables(
     return result
 
 
+#: The manifest's shape, stated once.
+#:
+#: ``project_manifest`` validates every section as it loads, but returned
+#: ``dict[str, object]`` -- so the guarantee it had just established was
+#: immediately lost and each consumer re-established it with ``assert
+#: isinstance``. The schema then lived in four places at once: the loader, the
+#: asserts, the serializer, and the family accessors, and a reshaped field had
+#: to be changed in all of them or configuration would be silently dropped on
+#: the next write.
+#:
+#: These carry that guarantee in the type instead. Nothing about the runtime
+#: value changes: the tables are the same plain dictionaries, validated at the
+#: same boundary.
+#: Read-only at the type level: a consumer that means to change a table
+#: copies it through ``_object_table`` first, which is where validation
+#: lives. Covariance also lets the loader's concrete tables fit.
+NamedTable = Mapping[str, Mapping[str, object]]
+
+
+class Assignments(TypedDict):
+    default: str
+    lifelines: Mapping[str, str]
+    actions: Mapping[str, str]
+
+
+class Providers(TypedDict):
+    connections: NamedTable
+
+
+class Routed(TypedDict):
+    configurations: NamedTable
+    assignments: Assignments
+
+
+class Connectors(TypedDict):
+    configurations: NamedTable
+    bindings: Mapping[str, str]
+    assignments: Mapping[str, Mapping[str, str]]
+
+
+class ProjectManifest(TypedDict):
+    schema_version: int
+    project_id: str | None
+    name: str
+    specification_file: str
+    workflow_entry: str | None
+    framework_directory: str | None
+    providers: Providers
+    models: Routed
+    assistants: Routed
+    connectors: Connectors
+    configuration: Mapping[str, object]
+    exists: bool
+
+
 def _object_table(value: object, *, field: str) -> dict[str, object]:
     """Return a shallow string-keyed table with a precise static type."""
 
     if not isinstance(value, dict):
         raise WorkspaceError(f"Project {field} must be a table.")
     return {str(key): item for key, item in value.items()}
+
+
+_Section = TypeVar("_Section", Providers, Routed, Connectors)
+
+
+def _section(
+    supplied: object | None, loaded: _Section, *, field: str
+) -> _Section:
+    """Return one manifest section, validating only what a caller supplied.
+
+    ``loaded`` came from ``project_manifest``, which validated it on the way
+    in; re-checking it would be asserting something already established. A
+    supplied replacement is untrusted, so it goes through ``_object_table``.
+    The cast records what that validation just proved, in the one place that
+    performs it.
+    """
+
+    if supplied is None:
+        return loaded
+    return cast(_Section, _object_table(supplied, field=field))
 
 
 def _safe_project_directory(root: Path, value: object, *, field: str) -> Path:
@@ -802,7 +880,7 @@ class Workspace:
     def manifest_path(self) -> Path:
         return self.root / PROJECT_MANIFEST_NAME
 
-    def project_manifest(self) -> dict[str, object]:
+    def project_manifest(self) -> ProjectManifest:
         """Load visible project configuration, or return non-writing defaults."""
 
         if not self.manifest_path.exists():
@@ -917,7 +995,7 @@ class Workspace:
         raw_model_assignments = raw_models.get("assignments") or {}
         if not isinstance(raw_model_assignments, dict):
             raise WorkspaceError("Project models.assignments must be a table.")
-        model_assignments = {
+        model_assignments: Assignments = {
             "default": str(raw_model_assignments.get("default") or "mock"),
             "lifelines": _string_values(
                 raw_model_assignments.get("lifelines") or {},
@@ -940,7 +1018,7 @@ class Workspace:
             raise WorkspaceError(
                 "Project assistants.assignments must be a table."
             )
-        assistant_assignments = {
+        assistant_assignments: Assignments = {
             "default": str(raw_assistant_assignments.get("default") or ""),
             "lifelines": _string_values(
                 raw_assistant_assignments.get("lifelines") or {},
@@ -985,7 +1063,7 @@ class Workspace:
         if not isinstance(raw_configuration, dict):
             raise WorkspaceError("Project configuration must be a table.")
         configuration = _scalar_values(raw_configuration, field="configuration")
-        return {
+        loaded: ProjectManifest = {
             "schema_version": PROJECT_SCHEMA_VERSION,
             "project_id": self._project_id(),
             "name": name,
@@ -1009,6 +1087,7 @@ class Workspace:
             "configuration": configuration,
             "exists": True,
         }
+        return loaded
 
     def _write_project_configuration(
         self,
@@ -1023,21 +1102,17 @@ class Workspace:
 
         self.initialize_project()
         manifest = self.project_manifest()
-        provider_data = _object_table(
-            providers if providers is not None else manifest["providers"],
-            field="providers",
+        # A section this method loaded is already validated and already typed.
+        # Only a section a caller supplied is untrusted, and `_section`
+        # validates exactly that case -- once, here, instead of at each of the
+        # places that later read it back.
+        provider_data = _section(providers, manifest["providers"], field="providers")
+        model_data = _section(models, manifest["models"], field="models")
+        assistant_data = _section(
+            assistants, manifest["assistants"], field="assistants"
         )
-        model_data = _object_table(
-            models if models is not None else manifest["models"],
-            field="models",
-        )
-        assistant_data = _object_table(
-            assistants if assistants is not None else manifest["assistants"],
-            field="assistants",
-        )
-        connector_data = _object_table(
-            connectors if connectors is not None else manifest["connectors"],
-            field="connectors",
+        connector_data = _section(
+            connectors, manifest["connectors"], field="connectors"
         )
         configuration_data = _scalar_values(
             configuration
@@ -1068,9 +1143,7 @@ class Workspace:
             )
 
         connections = provider_data.get("connections") or {}
-        assert isinstance(connections, dict)
         for name, raw in sorted(connections.items()):
-            assert isinstance(raw, dict)
             lines.extend(["", f"[providers.connections.{_toml_key(name)}]"])
             lines.extend(
                 f"{_toml_key(key)} = {_toml_string(value)}"
@@ -1078,16 +1151,13 @@ class Workspace:
             )
 
         configurations = model_data.get("configurations") or {}
-        assert isinstance(configurations, dict)
         for name, raw in sorted(configurations.items()):
-            assert isinstance(raw, dict)
             lines.extend(["", f"[models.configurations.{_toml_key(name)}]"])
             lines.extend(
                 f"{_toml_key(key)} = {_toml_literal(value)}"
                 for key, value in sorted(raw.items())
             )
         assignments = model_data.get("assignments") or {}
-        assert isinstance(assignments, dict)
         default = str(assignments.get("default") or "mock")
         lifelines = assignments.get("lifelines") or {}
         actions = assignments.get("actions") or {}
@@ -1096,7 +1166,6 @@ class Workspace:
             lines.append(f"default = {_toml_string(default)}")
         for label, values in (("lifelines", lifelines), ("actions", actions)):
             if values:
-                assert isinstance(values, dict)
                 lines.extend(["", f"[models.assignments.{label}]"])
                 lines.extend(
                     f"{_toml_key(key)} = {_toml_string(value)}"
@@ -1105,10 +1174,7 @@ class Workspace:
 
         assistant_configurations = assistant_data.get("configurations") or {}
         assistant_assignments = assistant_data.get("assignments") or {}
-        assert isinstance(assistant_configurations, dict)
-        assert isinstance(assistant_assignments, dict)
         for name, raw in sorted(assistant_configurations.items()):
-            assert isinstance(raw, dict)
             lines.extend(
                 ["", f"[assistants.configurations.{_toml_key(name)}]"]
             )
@@ -1127,7 +1193,6 @@ class Workspace:
             ("actions", assistant_actions),
         ):
             if values:
-                assert isinstance(values, dict)
                 lines.extend(["", f"[assistants.assignments.{label}]"])
                 lines.extend(
                     f"{_toml_key(key)} = {_toml_string(value)}"
@@ -1137,11 +1202,7 @@ class Workspace:
         connector_configurations = connector_data.get("configurations") or {}
         bindings = connector_data.get("bindings") or {}
         connector_assignments = connector_data.get("assignments") or {}
-        assert isinstance(connector_configurations, dict)
-        assert isinstance(bindings, dict)
-        assert isinstance(connector_assignments, dict)
         for name, raw in sorted(connector_configurations.items()):
-            assert isinstance(raw, dict)
             lines.extend(
                 ["", f"[connectors.configurations.{_toml_key(name)}]"]
             )
@@ -1162,7 +1223,6 @@ class Workspace:
         for label in ("lifelines", "actions"):
             values = connector_assignments.get(label) or {}
             if values:
-                assert isinstance(values, dict)
                 lines.extend(["", f"[connectors.assignments.{label}]"])
                 lines.extend(
                     f"{_toml_key(key)} = {_toml_string(value)}"
@@ -1180,7 +1240,6 @@ class Workspace:
         """This project's answers to its deployment questions."""
 
         values = self.project_manifest()["configuration"]
-        assert isinstance(values, dict)
         return dict(values)
 
     def write_configuration_values(self, values: Mapping[str, object]) -> None:
@@ -1198,7 +1257,7 @@ class Workspace:
         name: str | None = None,
         specification_file: str = SPECIFICATION_FILE_NAME,
         framework_directory: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ProjectManifest:
         """Create the visible project manifest."""
 
         if self.manifest_path.exists():
@@ -1245,7 +1304,7 @@ class Workspace:
         self._ensure_project_gitignore(framework_directory)
         return self.project_manifest()
 
-    def require_project(self) -> dict[str, object]:
+    def require_project(self) -> ProjectManifest:
         """Return the manifest or reject an accidental non-project directory."""
 
         if not self.manifest_path.is_file():
@@ -1435,9 +1494,7 @@ class Workspace:
         state = self.load()
         connections = self.provider_connections()
         manifest_models = self.project_manifest().get("models") or {}
-        assert isinstance(manifest_models, dict)
         raw_project = manifest_models.get("configurations") or {}
-        assert isinstance(raw_project, dict)
         configurations: dict[str, dict[str, str]] = {
             "mock": {
                 "provider": "mock",
@@ -1580,9 +1637,7 @@ class Workspace:
         """Return the project's portable model assignments."""
 
         manifest_models = self.project_manifest().get("models") or {}
-        assert isinstance(manifest_models, dict)
         project = manifest_models.get("assignments") or {}
-        assert isinstance(project, dict)
         project_lifelines = project.get("lifelines") or {}
         project_actions = project.get("actions") or {}
         if not isinstance(project_lifelines, dict) or not isinstance(
@@ -2326,9 +2381,7 @@ class Workspace:
 
         connections = self.provider_connections()
         manifest_connectors = self.project_manifest().get("connectors") or {}
-        assert isinstance(manifest_connectors, dict)
         raw_project = manifest_connectors.get("configurations") or {}
-        assert isinstance(raw_project, dict)
         configurations: dict[str, dict[str, str]] = {}
         for name, value in raw_project.items():
             normalized = _configuration_name(
@@ -2428,9 +2481,7 @@ class Workspace:
         """Return requirement-to-configuration bindings for one workflow."""
 
         manifest_connectors = self.project_manifest().get("connectors") or {}
-        assert isinstance(manifest_connectors, dict)
         project = manifest_connectors.get("bindings") or {}
-        assert isinstance(project, dict)
         return {str(name): str(value) for name, value in project.items()}
 
     def bind_connector(
@@ -2495,9 +2546,7 @@ class Workspace:
         """Return participant and action connector assignments."""
 
         manifest_connectors = self.project_manifest().get("connectors") or {}
-        assert isinstance(manifest_connectors, dict)
         project = manifest_connectors.get("assignments") or {}
-        assert isinstance(project, dict)
         result = {
             "default": str(project.get("default") or ""),
             "lifelines": {

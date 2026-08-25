@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from zippergen.workspace import ProjectManifest
+
 from collections.abc import Mapping
 from types import ModuleType
 
@@ -32,7 +37,7 @@ def _provider(spec: str) -> str:
 
 
 def _project_model_source(
-    project: dict[str, object],
+    project: "ProjectManifest",
     name: str,
     merged: dict[str, str],
 ) -> str:
