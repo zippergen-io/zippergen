@@ -906,7 +906,14 @@ def _print_status(status: dict[str, object]) -> None:
         error = last_failure.get("error") or "Error"
         message = last_failure.get("message") or "no detail recorded"
         occurred = _fmt_time(last_failure.get("recorded_at"))
-        print(f"Last failure: {role} · {error}: {message} · {occurred}")
+        if last_failure.get("historical") is True:
+            recovered = _fmt_time(last_failure.get("recovered_at"))
+            print(
+                f"Earlier failure (recovered): {role} · {error}: {message} · "
+                f"{occurred}; workflow completed {recovered}"
+            )
+        else:
+            print(f"Last failure: {role} · {error}: {message} · {occurred}")
 
     connectors = status.get("connectors")
     if isinstance(connectors, list) and connectors:

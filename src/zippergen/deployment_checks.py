@@ -386,6 +386,31 @@ def _store_status(store_path: str) -> dict[str, object]:
         state = "empty"
         summary = "store is initialized but empty"
 
+    # `last_failure` is deliberately independent of the bounded trace, but it
+    # is not necessarily the current outcome.  A later committed workflow
+    # result proves that execution recovered.  Preserve the diagnostic while
+    # making that relationship explicit for every status consumer.
+    if last_failure is not None:
+        failure_at = last_failure.get("recorded_at")
+        recovered_at = max(
+            (
+                result["updated_at"]
+                for result in results
+                if isinstance(result.get("updated_at"), (int, float))
+                and not isinstance(result.get("updated_at"), bool)
+            ),
+            default=None,
+        )
+        historical = (
+            isinstance(failure_at, (int, float))
+            and not isinstance(failure_at, bool)
+            and recovered_at is not None
+            and recovered_at > failure_at
+        )
+        last_failure = {**last_failure, "historical": historical}
+        if historical:
+            last_failure["recovered_at"] = recovered_at
+
     return {
         "store": str(path),
         "exists": True,

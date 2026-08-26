@@ -30,6 +30,7 @@ from zippergen.store import (
     read_history_keep,
     record_last_failure,
     record_history,
+    write_workflow_result,
 )
 from zippergen.storage_maintenance import inspect_store_storage
 from zippergen.workspace import Workspace
@@ -2706,6 +2707,36 @@ def test_status_reports_the_latest_lifeline_failure(
     output = capsys.readouterr().out
     assert "Last failure: Extractor" in output
     assert "RuntimeError: local model endpoint refused the connection" in output
+
+    assert main(["deploy", "status", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["last_failure"]["historical"] is False
+    assert "recovered_at" not in payload["last_failure"]
+
+
+def test_status_marks_a_failure_as_historical_after_workflow_completion(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    conn = open_store(str(store_path))
+    monkeypatch.setattr("zippergen.store.time.time", lambda: 1_700_000_000.0)
+    record_last_failure(conn, "Extractor", RuntimeError("temporary outage"))
+    monkeypatch.setattr("zippergen.store.time.time", lambda: 1_700_000_060.0)
+    write_workflow_result(conn, "example", "done")
+    conn.close()
+
+    assert main(["deploy", "status"]) == 0
+    output = capsys.readouterr().out
+    assert "Earlier failure (recovered): Extractor" in output
+    assert "workflow completed" in output
+    assert "Last failure:" not in output
+
+    assert main(["deploy", "status", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["last_failure"]["historical"] is True
+    assert payload["last_failure"]["recovered_at"] == 1_700_000_060.0
 
 
 def test_status_command_reports_missing_store(tmp_path, monkeypatch, capsys):
