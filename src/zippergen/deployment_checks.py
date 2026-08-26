@@ -921,20 +921,24 @@ def _doctor_checks(
         selected_assistants = {
             str(item.backend) for item in resolved if item.backend
         }
-        for selected in sorted(selected_assistants):
-            result = check_cli_assistant(selected)
-            if result.supported:
-                checks.append(_doctor_check(
-                    "ok",
-                    f"assistant {selected}",
-                    result.detail,
-                ))
-            else:
-                checks.append(_doctor_check(
-                    "fail",
-                    f"assistant {selected}",
-                    result.detail,
-                ))
+        # Use the deployment's environment, not the shell running `zg deploy`.
+        # In particular, this makes executable discovery identical here and
+        # inside a supervised service.
+        with _profile_environment(profile):
+            for selected in sorted(selected_assistants):
+                result = check_cli_assistant(selected)
+                if result.supported:
+                    checks.append(_doctor_check(
+                        "ok",
+                        f"assistant {selected}",
+                        result.detail,
+                    ))
+                else:
+                    checks.append(_doctor_check(
+                        "fail",
+                        f"assistant {selected}",
+                        result.detail,
+                    ))
 
     environment = _deployment_environment(profile)
     connector_bindings = profile.get("connectors") or {}

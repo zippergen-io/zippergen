@@ -112,6 +112,15 @@ def _deployment_environment(profile: dict[str, object]) -> dict[str, str]:
     if not isinstance(raw, dict):
         raise SystemExit("Deployment profile environment must be an object.")
     values = {str(key): str(value) for key, value in raw.items()}
+    # A supervised service does not necessarily inherit the interactive
+    # shell's executable search path (launchd notably supplies only a minimal
+    # environment).  Deploy snapshots the PATH under which readiness passed;
+    # run and doctor both enter this environment, so the executable checked is
+    # the executable the service can actually start.  An explicitly declared
+    # PATH remains authoritative.
+    executable_search_path = profile.get("executable_search_path")
+    if executable_search_path is not None:
+        values.setdefault("PATH", str(executable_search_path))
     values.update(_load_deployment_secrets(profile))
     connectors = profile.get("connectors")
     if isinstance(connectors, dict):

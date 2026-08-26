@@ -1,6 +1,7 @@
 """Named coding-assistant routing is portable and drives every run mode."""
 
 import json
+import os
 import subprocess
 import threading
 import tomllib
@@ -374,6 +375,9 @@ def test_durable_run_and_deployment_snapshot_project_assistant_routes(
     assert profile["assistant"] == "codex"
     assert profile["assistants"] == {"Reviewer": "claude"}
     assert profile["source_cwd"] == str(root)
+    assert profile["executable_search_path"] == os.environ.get(
+        "PATH", os.defpath
+    )
 
 
 def test_fresh_clone_keeps_routing_and_reports_only_the_missing_cli(

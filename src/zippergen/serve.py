@@ -4007,6 +4007,11 @@ def _deploy_command_locked(args) -> int:
 
     profile["schema_version"] = DEPLOYMENT_PROFILE_SCHEMA_VERSION
     profile["project_id"] = workspace_project_id
+    # The service must resolve external executables under the same PATH that
+    # passed this deployment's readiness checks.  launchd does not preserve an
+    # interactive shell's PATH, so make it part of the immutable profile and
+    # let `_deployment_environment` apply it to doctor and runtime alike.
+    profile["executable_search_path"] = os.environ.get("PATH", os.defpath)
     # A deployment snapshots the project's current routing.  Re-deploying is
     # what applies later edits to zippergen.toml; configuring an already
     # prepared deployment remains an explicit profile-only operation.

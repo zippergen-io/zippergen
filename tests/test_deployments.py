@@ -8,6 +8,7 @@ import pytest
 
 from zippergen.deployment_profiles import (
     DEPLOYMENT_PROFILE_SCHEMA_VERSION,
+    _deployment_environment,
     _load_deployment_profile,
 )
 from zippergen.deployments import (
@@ -44,6 +45,18 @@ def test_deployment_profile_preserves_typed_inputs(tmp_path, monkeypatch):
     loaded = _load_deployment_profile("typed-inputs")
     assert loaded["inputs"] == {"coordinates": (1, [2, 3])}
     assert type(loaded["inputs"]["coordinates"]) is tuple
+
+
+def test_deployment_environment_restores_the_path_that_passed_readiness():
+    profile = {
+        "executable_search_path": "/operator/bin:/usr/bin",
+        "environment": {},
+    }
+
+    assert _deployment_environment(profile)["PATH"] == "/operator/bin:/usr/bin"
+
+    profile["environment"] = {"PATH": "/declared/bin"}
+    assert _deployment_environment(profile)["PATH"] == "/declared/bin"
 
 
 def test_cli_resolves_a_deployment_through_its_retained_workspace_name(
@@ -1108,6 +1121,55 @@ def test_the_workspace_check_runs_as_part_of_the_deployment_checks(
     ]
     assert workspace_checks, "the deployment checks must include it"
     assert all(check["status"] == "fail" for check in workspace_checks)
+
+
+def test_assistant_readiness_uses_the_deployed_executable_path(
+    tmp_path, monkeypatch
+):
+    """The service and doctor must resolve the same assistant executable."""
+
+    from zippergen.assistant_backends import AssistantCliCheck
+    from zippergen.deployment_checks import _doctor_checks
+
+    home = tmp_path / "home"
+    bundle = home / "apps" / "demo" / "20260101-000000"
+    bundle.mkdir(parents=True)
+    (tmp_path / "sandbox").mkdir()
+    _workspace_workflow(tmp_path, str(tmp_path / "sandbox"))
+    for name in ("workflow.py", "instructions.md"):
+        (bundle / name).write_text((tmp_path / "wf" / name).read_text())
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.setenv("PATH", "/service/bin")
+    observed: list[str | None] = []
+
+    def check(backend: str) -> AssistantCliCheck:
+        observed.append(os.environ.get("PATH"))
+        return AssistantCliCheck(backend, "/operator/bin/claude", True, "ok")
+
+    monkeypatch.setattr(
+        "zippergen.assistant_backends.check_cli_assistant", check
+    )
+
+    _doctor_checks(
+        "demo",
+        include_systemd=False,
+        before_start=True,
+        check_artifacts=False,
+        profile_override={
+            "name": "demo",
+            "cwd": str(bundle),
+            "workflow": "workflow.py:workspace_demo",
+            "store": str(home / "runs" / "demo.sqlite"),
+            "log": str(home / "logs" / "demo.log"),
+            "assistant": "claude",
+            "assistants": {},
+            "environment": {},
+            "executable_search_path": "/operator/bin:/usr/bin",
+        },
+    )
+
+    assert observed == ["/operator/bin:/usr/bin"]
+    assert os.environ["PATH"] == "/service/bin"
 
 
 def test_drift_reads_every_section_a_field_can_be_delivered_to(tmp_path, monkeypatch):
