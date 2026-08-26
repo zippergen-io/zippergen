@@ -51,6 +51,7 @@ def _effective_routing(
     site_facts: list[dict[str, object]],
     checks: list[Check],
     live: bool,
+    semantics: Mapping[str, object] | None = None,
 ) -> list[dict[str, object]]:
     """Resolve every action and connector slot to its effective destination."""
 
@@ -73,9 +74,11 @@ def _effective_routing(
                 for item in site_facts
             )
 
-        semantics = workflow_semantics(workflow, module=module)
-        sites = semantics.get("action_sites") or []
-        definitions = semantics.get("action_definitions") or {}
+        model = semantics if semantics is not None else workflow_semantics(
+            workflow, module=module
+        )
+        sites = model.get("action_sites") or []
+        definitions = model.get("action_definitions") or {}
         action_definitions = definitions if isinstance(definitions, Mapping) else {}
         seen_sites: set[tuple[str, str, str]] = set()
         raw_model_overrides = resolved_models.get("overrides") or {}
@@ -447,6 +450,7 @@ def configuration_report(
     # declaration became "no configuration fields" -- the operator saw a
     # workflow that asks nothing and never learned why.
     declaration: DeploymentSpec | None = None
+    semantics: Mapping[str, object] | None = None
     if module is not None:
         try:
             declaration = deployment_spec_from_module(module)
@@ -460,12 +464,14 @@ def configuration_report(
                     fix="Fix zippergen_deployment in the workflow module.",
                 )
             )
-            # Everything below reads the module, and several of those readers
-            # parse the declaration again. A module whose declaration cannot
-            # be built is not usable for any of them, and the failure is
-            # already reported, so it is set aside here rather than raised
-            # again -- unhandled -- from somewhere further down.
-            module = None
+        if workflow is not None:
+            # The report still needs action and connector semantics after a
+            # malformed deployment declaration. Supplying the already-decoded
+            # result (including explicit failure as None) prevents every
+            # downstream consumer from parsing that declaration again.
+            semantics = workflow_semantics(
+                workflow, module, deployment=declaration
+            )
     for item in model_rows:
         if item.get("temperature") is not None and not model_accepts_temperature(
             str(item.get("spec") or "")
@@ -545,12 +551,14 @@ def configuration_report(
                 workflow_spec,
                 workflow,
                 module=module,
+                semantics=semantics,
             )
             effective = resolved_assistant_actions(
                 workflow,
                 assistant_routing,
                 module=module,
                 assignments=assistant_profile,
+                semantics=semantics,
             )
         except (WorkspaceError, SystemExit, ValueError) as exc:
             checks.append(
@@ -613,6 +621,7 @@ def configuration_report(
                 connector_assignments,
                 connector_bindings,
                 connector_configurations,
+                semantics=semantics,
             )
         )
 
@@ -649,6 +658,7 @@ def configuration_report(
         site_facts=site_facts,
         checks=checks,
         live=live,
+        semantics=semantics,
     )
 
     return {
@@ -685,7 +695,11 @@ def configuration_report(
             # Every slot the workflow offers, filled or not. The two kinds of
             # slot are keyed differently, and nothing else on screen says so.
             "slots": _connector_slots(
-                workflow, module, connector_assignments, connector_bindings
+                workflow,
+                module,
+                connector_assignments,
+                connector_bindings,
+                semantics=semantics,
             ),
         },
         "site_facts": site_facts,

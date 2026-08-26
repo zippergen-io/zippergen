@@ -33,8 +33,11 @@ docs/workflow-development-deployment-guide.pdf
 ```
 
 Those two files are committed and are the ones the project README links, so
-rebuild them whenever you change a `.tex` source. All auxiliary files stay under
-the ignored `docs/_build/` directory.
+rebuild them whenever you change a `.tex` source. Each successful build also
+updates the PDF's committed `.source.sha256` stamp. The ordinary test suite
+compares that stamp with the source, so a source edit cannot be merged while
+leaving its published PDF stale. All auxiliary files stay under the ignored
+`docs/_build/` directory.
 
 Build only one document with:
 

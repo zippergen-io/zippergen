@@ -89,6 +89,8 @@ def _connector_slots(
     module: ModuleType | None,
     assignments: Mapping[str, object],
     bindings: Mapping[str, str],
+    *,
+    semantics: Mapping[str, object] | None = None,
 ) -> list[dict[str, str]]:
     """List every connector slot with the exact name you would type for it.
 
@@ -108,7 +110,7 @@ def _connector_slots(
             "meaning": f"{requirement.kind} for {requirement.participant}",
             "configuration": bindings.get(requirement.name) or "not assigned",
         })
-    sites = human_action_sites(workflow, module)
+    sites = human_action_sites(workflow, module, semantics)
     default = str(assignments.get("default") or "")
     raw_lifelines = assignments.get("lifelines")
     lifelines = dict(raw_lifelines) if isinstance(raw_lifelines, Mapping) else {}

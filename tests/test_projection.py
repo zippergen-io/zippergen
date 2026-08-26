@@ -576,6 +576,31 @@ def test_a_control_value_survives_the_durable_boundary_as_itself():
     assert not is_control_value(loads_value(dumps_value(text)))
 
 
+def test_console_trace_reads_the_recorded_control_fact(capsys):
+    """Trace presentation must not rediscover control from a payload value."""
+
+    from zippergen.runtime import console_trace
+
+    console_trace({
+        "type": "send",
+        "lifeline": "A",
+        "to": "B",
+        "control": True,
+        "values": [True],
+    })
+    console_trace({
+        "type": "send",
+        "lifeline": "A",
+        "to": "B",
+        "values": [True, "κ_ctrl_user-data"],
+    })
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "[A] control -> B"
+    assert "[A] send -> B" in lines
+    assert any("κ_ctrl_user-data" in line for line in lines)
+
+
 def test_no_module_classifies_a_control_value_by_its_spelling():
     """One question, asked of the type; never of the characters."""
 

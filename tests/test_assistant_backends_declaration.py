@@ -14,7 +14,6 @@ from zippergen.assistant_backends import (
     ASSISTANT_BACKEND_SPECS,
     ASSISTANT_BACKENDS,
     _ASSISTANT_AUTH_ENVIRONMENT,
-    _REQUIRED_CLI_OPTIONS,
     assistant_backend_spec,
 )
 from zippergen.serve import _parse_cli_args
@@ -40,7 +39,9 @@ def test_no_module_writes_the_backend_set_out_by_hand() -> None:
 def test_every_declared_backend_can_actually_be_run(backend: str) -> None:
     """Declared but not runnable is the failure this pairing prevents."""
 
-    assert backend in _REQUIRED_CLI_OPTIONS
+    spec = assistant_backend_spec(backend)
+    assert spec is not None
+    assert spec.required_options
     assert backend in _ASSISTANT_AUTH_ENVIRONMENT
 
 
@@ -60,7 +61,7 @@ def test_every_declared_backend_is_offered_by_completion(backend: str) -> None:
 def test_nothing_runnable_is_left_undeclared() -> None:
     """The other direction: a backend with an implementation but no entry."""
 
-    assert set(_REQUIRED_CLI_OPTIONS) == set(ASSISTANT_BACKENDS)
+    assert len(set(ASSISTANT_BACKENDS)) == len(ASSISTANT_BACKENDS)
     assert set(_ASSISTANT_AUTH_ENVIRONMENT) == set(ASSISTANT_BACKENDS)
 
 
@@ -86,6 +87,16 @@ def test_every_declared_backend_brings_its_own_adapter(spec) -> None:
 
     help_command = spec.help_command("/usr/bin/thing")
     assert help_command[0] == "/usr/bin/thing"
+
+
+def test_backend_adapters_are_not_shared_implicitly() -> None:
+    """A new name must not silently reuse another backend's execution rules."""
+
+    commands = [spec.command for spec in ASSISTANT_BACKEND_SPECS]
+    assert len(set(commands)) == len(commands), (
+        "each backend needs its own command adapter, even when two CLIs happen "
+        "to accept similar options today"
+    )
 
 
 @pytest.mark.parametrize("spec", ASSISTANT_BACKEND_SPECS, ids=lambda s: s.name)

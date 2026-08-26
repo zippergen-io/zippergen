@@ -7,9 +7,9 @@ deployment runs with, plus the secret values that routing refers to by name.
 
 The split is the point. The snapshot is durable, portable and free of
 credentials; the environment holds the values and never leaves the machine that
-supplied them.
-
-This is a pure configuration layer. Nothing here renders or prompts.
+supplied them. This module also owns the workers that consume those records;
+configuration stays pure, while worker start and stop are explicitly the
+side-effecting lifecycle boundary. Nothing here renders or prompts.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from zippergen.syntax import Workflow, _ordered_workflow_lifelines
 from zippergen.workspace import Workspace
 from zippergen.connectors import connector_kind_spec
 from zippergen.provider_connections import (
-    connector_kinds_for_provider,
+    provider_credential_label,
     provider_environment_name,
 )
 
@@ -39,10 +39,15 @@ class ConnectorWiringError(RuntimeError):
 def human_action_sites(
     workflow: Workflow,
     module: ModuleType | None,
+    semantics: Mapping[str, object] | None = None,
 ) -> dict[str, list[str]]:
     """Return each participant's `@human` actions, in protocol order."""
 
-    model = workflow_semantics(workflow, module)
+    model = (
+        semantics
+        if semantics is not None
+        else workflow_semantics(workflow, module)
+    )
     actions: dict[str, list[str]] = {}
     sites = model.get("action_sites") or []
     if isinstance(sites, list):
@@ -86,7 +91,8 @@ def _check_google_authorization(
     for item in requirements:
         configuration = configurations.get(bindings.get(item.name, ""), {})
         connection = str(configuration.get("connection") or "")
-        if connection and item.kind in connector_kinds_for_provider("google"):
+        spec = connector_kind_spec(item.kind)
+        if connection and spec is not None and spec.scopes:
             by_connection.setdefault(connection, []).append((item.kind, item.access))
 
     profiles = workspace.provider_connections()
@@ -187,27 +193,24 @@ def connector_runtime(
             raise ConnectorWiringError(
                 f"Connector configuration {name!r} has no provider connection."
             )
-        secrets: dict[str, str] = {}
-        if provider == "telegram":
-            token = workspace.provider_secret(connection, "bot_token")
-            if not token:
-                raise ConnectorWiringError(
-                    f"The Telegram bot token for connection {connection!r} is "
-                    f"missing on this machine. Use 'zippergen provider "
-                    f"set-credential {connection}'."
-                )
-            secrets["bot_token"] = token
-        elif provider == "google":
-            credential = workspace.provider_secret(
-                connection, "authorized_user_json"
+        spec = connector_kind_spec(configuration.get("kind"))
+        if spec is None:
+            raise ConnectorWiringError(
+                f"Connector configuration {name!r} has an unsupported kind."
             )
-            if not credential:
-                raise ConnectorWiringError(
-                    f"Google connection {connection!r} is not authorized on "
-                    f"this machine. Use 'zippergen provider authorize "
-                    f"{connection}'."
-                )
-            secrets["authorized_user_json"] = credential
+        credential = workspace.provider_secret(connection, spec.credential)
+        if not credential:
+            label = provider_credential_label(spec.provider) or spec.credential
+            instruction = (
+                f"zippergen provider authorize {connection}"
+                if spec.scopes
+                else f"zippergen provider set-credential {connection}"
+            )
+            raise ConnectorWiringError(
+                f"The {label} for connection {connection!r} "
+                f"is missing on this machine. Use '{instruction}'."
+            )
+        secrets = {spec.credential: credential}
         return configuration, connection, provider, secrets
 
     known_targets = _human_targets(workflow, module)
@@ -280,41 +283,17 @@ def connector_runtime(
                 f"Connector {requirement.name!r} declares kind "
                 f"{requirement.kind!r}, which nothing supports."
             )
-        if requirement.kind == "telegram":
-            token_env = provider_environment_name(connection, "bot_token")
-            record.update(
-                {
-                    "chat_id": configuration.get("chat_id"),
-                    "allowed_user_id": (
-                        configuration.get("allowed_user_id")
-                        or configuration.get("chat_id")
-                    ),
-                    "token_env": token_env,
-                }
-            )
-            environment[token_env] = secrets["bot_token"]
-        elif spec.scopes:
-            credential_env = provider_environment_name(
-                connection, "authorized_user_json"
-            )
-            if requirement.kind == "google-sheets":
-                record.update(
-                    {
-                        "spreadsheet_id": configuration.get("spreadsheet_id"),
-                        "tab": configuration.get("tab"),
-                        "credential_env": credential_env,
-                    }
-                )
-            else:
-                record.update(
-                    {
-                        "account": configuration.get("account") or "me",
-                        "query": configuration.get("query")
-                        or "is:unread in:inbox",
-                        "credential_env": credential_env,
-                    }
-                )
-            environment[credential_env] = secrets["authorized_user_json"]
+        credential_env = provider_environment_name(connection, spec.credential)
+        record[spec.credential_environment_field] = credential_env
+        environment[credential_env] = secrets[spec.credential]
+        for setting in spec.settings:
+            value = str(configuration.get(setting.name) or "")
+            if not value and setting.default_from:
+                value = str(record.get(setting.default_from) or "")
+            if not value:
+                value = setting.default or ""
+            if value:
+                record[setting.name] = value
         snapshot[f"requirement:{requirement.name}"] = record
 
     return snapshot, environment
@@ -330,29 +309,28 @@ def connector_environment_from_snapshot(
     for raw in snapshot.values():
         if not isinstance(raw, Mapping):
             continue
-        token_env = str(raw.get("token_env") or "")
-        if token_env:
-            connection = str(raw.get("connection") or "")
-            telegram_token = workspace.provider_secret(connection, "bot_token")
-            if not telegram_token:
-                raise ConnectorWiringError(
-                    f"The Telegram bot token for connection {connection!r} is "
-                    f"missing. Use 'zippergen provider set-credential "
-                    f"{connection}'."
-                )
-            environment[token_env] = telegram_token
-        credential_env = str(raw.get("credential_env") or "")
-        if credential_env:
-            connection = str(raw.get("connection") or "")
-            google_credential = workspace.provider_secret(
-                connection, "authorized_user_json"
+        spec = connector_kind_spec(raw.get("kind"))
+        if spec is None:
+            continue
+        environment_name = str(
+            raw.get(spec.credential_environment_field) or ""
+        )
+        if not environment_name:
+            continue
+        connection = str(raw.get("connection") or "")
+        credential = workspace.provider_secret(connection, spec.credential)
+        if not credential:
+            label = provider_credential_label(spec.provider) or spec.credential
+            instruction = (
+                f"zippergen provider authorize {connection}"
+                if spec.scopes
+                else f"zippergen provider set-credential {connection}"
             )
-            if not google_credential:
-                raise ConnectorWiringError(
-                    f"Google connection {connection!r} is not authorized. Use "
-                    f"'zippergen provider authorize {connection}'."
-                )
-            environment[credential_env] = google_credential
+            raise ConnectorWiringError(
+                f"The {label} for connection {connection!r} "
+                f"is missing. Use '{instruction}'."
+            )
+        environment[environment_name] = credential
     return environment
 
 

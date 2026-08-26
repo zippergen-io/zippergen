@@ -22,16 +22,14 @@ import tempfile
 import time
 import tomllib
 import uuid
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from collections.abc import Mapping
 from typing import Any
-
-from collections.abc import Mapping
-from collections.abc import Callable
 from typing import TypeVar, TypedDict
 
 from zippergen.value_codec import decode_value, encode_value
 from zippergen.assistant_backends import ASSISTANT_BACKENDS
+from zippergen.connectors import CONNECTOR_SETTING_NAMES, connector_kind_spec
 
 
 WORKSPACE_SCHEMA_VERSION = 2
@@ -98,16 +96,7 @@ _PROVIDER_SITE_FIELDS = frozenset(
     {"base_url", "granted_scopes", "client_id", "credential_expiry"}
 )
 _CONNECTOR_PROJECT_FIELDS = frozenset(
-    {
-        "connection",
-        "kind",
-        "chat_id",
-        "allowed_user_id",
-        "spreadsheet_id",
-        "tab",
-        "account",
-        "query",
-    }
+    {"connection", "kind", *CONNECTOR_SETTING_NAMES}
 )
 
 
@@ -332,12 +321,27 @@ def _validated_connector_configuration(
             f"Connector configuration {normalized!r} uses provider connection "
             f"{connection!r} ({provider}), which does not support {kind!r}."
         )
-    required = {
-        "telegram": ("chat_id",),
-        "gmail": ("account", "query"),
-        "google-sheets": ("spreadsheet_id", "tab"),
-    }.get(kind, ())
-    missing = [field for field in required if not configuration.get(field)]
+    spec = connector_kind_spec(kind)
+    if spec is None:
+        raise WorkspaceError(f"Unsupported connector kind {kind!r}.")
+    kind_fields = {
+        "connection",
+        "kind",
+        *(setting.name for setting in spec.settings),
+    }
+    irrelevant = set(configuration) - kind_fields
+    if irrelevant:
+        raise WorkspaceError(
+            f"Connector configuration {normalized!r} has field(s) that do not "
+            f"belong to {kind!r}: "
+            + ", ".join(sorted(irrelevant))
+            + "."
+        )
+    missing = [
+        setting.name
+        for setting in spec.settings
+        if setting.required and not configuration.get(setting.name)
+    ]
     if missing:
         raise WorkspaceError(
             f"Connector configuration {normalized!r} is missing required field(s): "
@@ -664,6 +668,17 @@ def _section(
     return loaded if supplied is None else decode(supplied)
 
 
+def _member(table: Mapping[str, object], name: str, default: object) -> object:
+    """Return a field's value, using the default only when it is absent.
+
+    A falsey value is still a supplied value and must reach its decoder.  Using
+    ``value or {}`` here once turned malformed empty lists and strings into
+    valid empty tables, making the manifest's advertised boundary porous.
+    """
+
+    return table[name] if name in table else default
+
+
 def _decode_assignments(
     value: object, *, field: str, default: str
 ) -> Assignments:
@@ -671,12 +686,12 @@ def _decode_assignments(
 
     table = _object_table(value, field=field)
     return {
-        "default": str(table.get("default") or default),
+        "default": str(_member(table, "default", default)),
         "lifelines": _string_values(
-            table.get("lifelines") or {}, field=f"{field}.lifelines"
+            _member(table, "lifelines", {}), field=f"{field}.lifelines"
         ),
         "actions": _string_values(
-            table.get("actions") or {}, field=f"{field}.actions"
+            _member(table, "actions", {}), field=f"{field}.actions"
         ),
     }
 
@@ -685,7 +700,7 @@ def _decode_providers(value: object, *, field: str = "providers") -> Providers:
     table = _object_table(value, field=field)
     return {
         "connections": _named_object_tables(
-            table.get("connections") or {}, field=f"{field}.connections"
+            _member(table, "connections", {}), field=f"{field}.connections"
         )
     }
 
@@ -696,10 +711,10 @@ def _decode_routed(value: object, *, field: str, default: str) -> Routed:
     table = _object_table(value, field=field)
     return {
         "configurations": _named_object_tables(
-            table.get("configurations") or {}, field=f"{field}.configurations"
+            _member(table, "configurations", {}), field=f"{field}.configurations"
         ),
         "assignments": _decode_assignments(
-            table.get("assignments") or {},
+            _member(table, "assignments", {}),
             field=f"{field}.assignments",
             default=default,
         ),
@@ -710,13 +725,13 @@ def _decode_connectors(value: object, *, field: str = "connectors") -> Connector
     table = _object_table(value, field=field)
     return {
         "configurations": _named_object_tables(
-            table.get("configurations") or {}, field=f"{field}.configurations"
+            _member(table, "configurations", {}), field=f"{field}.configurations"
         ),
         "bindings": _string_values(
-            table.get("bindings") or {}, field=f"{field}.bindings"
+            _member(table, "bindings", {}), field=f"{field}.bindings"
         ),
         "assignments": _decode_assignments(
-            table.get("assignments") or {},
+            _member(table, "assignments", {}),
             field=f"{field}.assignments",
             default="",
         ),
@@ -1096,21 +1111,27 @@ class Workspace:
         # is this reader's own step, so that consumers see one value type
         # while the file keeps its typed TOML literals.
         providers_section = _normalize_providers(
-            _decode_providers(manifest.get("providers") or {})
+            _decode_providers(_member(manifest, "providers", {}))
         )
         models_section = _normalize_routed(
-            _decode_routed(manifest.get("models") or {}, field="models", default="mock")
+            _decode_routed(
+                _member(manifest, "models", {}), field="models", default="mock"
+            )
         )
         assistants_section = _normalize_routed(
-            _decode_routed(manifest.get("assistants") or {}, field="assistants", default="")
+            _decode_routed(
+                _member(manifest, "assistants", {}),
+                field="assistants",
+                default="",
+            )
         )
         connectors_section = _normalize_connectors(
-            _decode_connectors(manifest.get("connectors") or {})
+            _decode_connectors(_member(manifest, "connectors", {}))
         )
         # The answers a person gave to this project's deployment questions.
         # They live here, beside every other visible choice, so that "where is
         # the value I typed?" has one answer rather than one per code path.
-        raw_configuration = manifest.get("configuration") or {}
+        raw_configuration = _member(manifest, "configuration", {})
         if not isinstance(raw_configuration, dict):
             raise WorkspaceError("Project configuration must be a table.")
         configuration = _scalar_values(raw_configuration, field="configuration")
@@ -2060,8 +2081,9 @@ class Workspace:
             backend = str(configuration.get("backend") or "").strip().casefold()
             if backend not in set(ASSISTANT_BACKENDS):
                 raise WorkspaceError(
-                    f"Assistant configuration {name!r} must select backend "
-                    "'codex' or 'claude'."
+                    f"Assistant configuration {name!r} must select one of: "
+                    + ", ".join(ASSISTANT_BACKENDS)
+                    + "."
                 )
             result[str(name)] = {"backend": backend}
         return result

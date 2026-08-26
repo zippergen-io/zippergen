@@ -154,8 +154,6 @@ def _format_mapping_lines(mapping: dict[str, object], *, width: int = 88) -> lis
 def _format_sequence_lines(values: list[object], *, width: int = 88) -> list[str]:
     lines: list[str] = []
     for idx, value in enumerate(values, start=1):
-        if is_control_value(value):
-            continue
         rendered = _format_scalar(value)
         wrapped = textwrap.wrap(
             rendered,
@@ -177,7 +175,7 @@ def console_trace(event: dict) -> None:
     lines: list[str] | None = None
 
     if t == "send":
-        is_ctrl = any(is_control_value(v) for v in (event.get("values") or []))
+        is_ctrl = bool(event.get("control"))
         lines = [f"[{lifeline}] {'control' if is_ctrl else 'send'} -> {event['to']}"]
         payload_lines = _format_sequence_lines(event.get("values") or [])
         if payload_lines:

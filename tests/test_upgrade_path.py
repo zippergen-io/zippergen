@@ -227,6 +227,23 @@ def test_a_previous_store_is_refused_and_names_the_command(tmp_path):
     assert "reset" in message
 
 
+def test_schema_three_is_refused_because_it_did_not_type_control_payloads(tmp_path):
+    """The value-codec change is a store format change."""
+
+    assert SCHEMA_VERSION > 3
+    path = tmp_path / "string-control.sqlite"
+    open_store(str(path)).close()
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "UPDATE store_meta SET value='3' WHERE key='schema_version'"
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(StoreSchemaError, match="schema 3"):
+        open_store(str(path))
+
+
 def test_a_store_from_a_newer_zippergen_is_refused_and_names_reset(tmp_path):
     path = tmp_path / "future.sqlite"
     conn = sqlite3.connect(path)

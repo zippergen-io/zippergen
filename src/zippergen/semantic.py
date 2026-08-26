@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping
 from collections import Counter
 from types import ModuleType
 
-from zippergen.deployment import deployment_spec_from_module
+from zippergen.deployment import DeploymentSpec, deployment_spec_from_module
 from zippergen.syntax import (
     ActStmt,
     AssistantAction,
@@ -37,6 +37,13 @@ from zippergen.syntax import (
 
 
 SEMANTIC_SNAPSHOT_SCHEMA = "zippergen.workflow-semantics.v1"
+
+
+class _DeploymentUnset:
+    pass
+
+
+_DEPLOYMENT_UNSET = _DeploymentUnset()
 
 
 def _json_value(value: object) -> object:
@@ -163,6 +170,8 @@ def _action_definition(action: object) -> dict[str, object]:
 def workflow_semantics(
     workflow: Workflow,
     module: ModuleType | None = None,
+    *,
+    deployment: DeploymentSpec | None | _DeploymentUnset = _DEPLOYMENT_UNSET,
 ) -> dict[str, object]:
     """Return a JSON-compatible semantic model independent of source layout."""
 
@@ -329,21 +338,30 @@ def workflow_semantics(
     if module is not None:
         from zippergen.connectors import connector_requirements_from_module
 
-        declaration = deployment_spec_from_module(module)
-        result["deployment"] = {
-            "description": declaration.description,
-            "fields": {
-                field.name: _json_value(field.__dict__) for field in declaration.fields
-            },
-            "packages": {
-                package.requirement: _json_value(package.__dict__)
-                for package in declaration.packages
-            },
-            "setup": {
-                step.name: _json_value(step.__dict__) for step in declaration.setup
-            },
-            "files": list(declaration.files),
-        }
+        declaration = (
+            deployment_spec_from_module(module)
+            if deployment is _DEPLOYMENT_UNSET
+            else deployment
+            if isinstance(deployment, DeploymentSpec)
+            else None
+        )
+        if declaration is not None:
+            result["deployment"] = {
+                "description": declaration.description,
+                "fields": {
+                    field.name: _json_value(field.__dict__)
+                    for field in declaration.fields
+                },
+                "packages": {
+                    package.requirement: _json_value(package.__dict__)
+                    for package in declaration.packages
+                },
+                "setup": {
+                    step.name: _json_value(step.__dict__)
+                    for step in declaration.setup
+                },
+                "files": list(declaration.files),
+            }
         connectors = {
             requirement.name: requirement.as_dict()
             for requirement in connector_requirements_from_module(module)

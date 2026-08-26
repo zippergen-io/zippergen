@@ -97,9 +97,11 @@ def _static_connector_checks(
     assignments: dict[str, dict[str, str]],
     bindings: dict[str, str],
     configurations: dict[str, dict[str, str]],
+    *,
+    semantics: Mapping[str, object] | None = None,
 ) -> list[Check]:
     checks: list[Check] = []
-    human_sites = human_action_sites(workflow, module)
+    human_sites = human_action_sites(workflow, module, semantics)
     human_targets = {
         *human_sites,
         *(

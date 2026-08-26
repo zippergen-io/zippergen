@@ -23,7 +23,7 @@ from typing import Any
 from types import ModuleType
 
 from zippergen.deployment import DeploymentSpec, deployment_spec_from_module
-from zippergen.connectors import connector_requirements_from_module
+from zippergen.connectors import connector_kind_spec, connector_requirements_from_module
 from zippergen.assistant_configuration import normalize_assistant_overrides
 from zippergen.models import selected_llm_specs
 from zippergen.workflow_io import load_workflow_spec
@@ -983,141 +983,22 @@ def _doctor_checks(
                     f"requires {requirement.kind}; deployment has {kind or 'none'}",
                 ))
                 continue
-            if kind == "telegram":
-                token_env = str(raw_binding.get("token_env") or "")
-                token = environment.get(token_env)
-                chat_id = str(raw_binding.get("chat_id") or "")
-                if not token or not chat_id:
-                    checks.append(_doctor_check(
-                        "fail",
-                        f"connector {requirement.name}",
-                        "Telegram token or chat id is missing",
-                    ))
-                    continue
-                if not live_connectors:
-                    checks.append(_doctor_check(
-                        "ok",
-                        f"connector {requirement.name}",
-                        (
-                            f"Telegram chat {chat_id} is configured; live "
-                            "availability was not checked"
-                        ),
-                    ))
-                    continue
-                try:
-                    from zippergen.telegram_notify import TelegramBotClient
-
-                    client = TelegramBotClient(token, timeout=5)
-                    client.request("getMe")
-                    client.request("getChat", chat_id=chat_id)
-                except Exception as exc:
-                    checks.append(_doctor_check(
-                        "fail",
-                        f"connector {requirement.name}",
-                        f"Telegram is unavailable: {exc}",
-                    ))
-                else:
-                    checks.append(_doctor_check(
-                        "ok",
-                        f"connector {requirement.name}",
-                        f"Telegram chat {chat_id} is reachable",
-                    ))
-            elif kind == "google-sheets":
-                credential_env = str(
-                    raw_binding.get("credential_env") or ""
-                )
-                credential = environment.get(credential_env)
-                spreadsheet_id = str(
-                    raw_binding.get("spreadsheet_id") or ""
-                )
-                tab = str(raw_binding.get("tab") or "")
-                if not credential or not spreadsheet_id or not tab:
-                    checks.append(_doctor_check(
-                        "fail",
-                        f"connector {requirement.name}",
-                        "Google credential, spreadsheet ID, or tab is missing",
-                    ))
-                    continue
-                if not live_connectors:
-                    checks.append(_doctor_check(
-                        "ok",
-                        f"connector {requirement.name}",
-                        f"Google spreadsheet {spreadsheet_id}, tab {tab} is configured",
-                    ))
-                    continue
-                try:
-                    from zippergen.google_sheets import GoogleSheetsTable
-
-                    info = GoogleSheetsTable(
-                        requirement=requirement.name,
-                        spreadsheet_id=spreadsheet_id,
-                        tab=tab,
-                        credential_json=credential,
-                        access=requirement.access,
-                    ).inspect()
-                except Exception as exc:
-                    checks.append(_doctor_check(
-                        "fail",
-                        f"connector {requirement.name}",
-                        f"Google Sheets is unavailable: {exc}",
-                    ))
-                else:
-                    checks.append(_doctor_check(
-                        "ok",
-                        f"connector {requirement.name}",
-                        f"{info['title']}, tab {info['tab']} is reachable",
-                    ))
-            elif kind == "gmail":
-                credential_env = str(
-                    raw_binding.get("credential_env") or ""
-                )
-                credential = environment.get(credential_env)
-                account = str(raw_binding.get("account") or "me")
-                query = str(
-                    raw_binding.get("query") or "is:unread in:inbox"
-                )
-                if not credential:
-                    checks.append(_doctor_check(
-                        "fail",
-                        f"connector {requirement.name}",
-                        "Google credential is missing",
-                    ))
-                    continue
-                if not live_connectors:
-                    checks.append(_doctor_check(
-                        "ok",
-                        f"connector {requirement.name}",
-                        f"Gmail account {account}, query {query!r} is configured",
-                    ))
-                    continue
-                try:
-                    from zippergen.google_gmail import GmailMailbox
-
-                    info = GmailMailbox(
-                        requirement=requirement.name,
-                        account=account,
-                        query=query,
-                        credential_json=credential,
-                        access=requirement.access,
-                    ).inspect()
-                except Exception as exc:
-                    checks.append(_doctor_check(
-                        "fail",
-                        f"connector {requirement.name}",
-                        f"Gmail is unavailable: {exc}",
-                    ))
-                else:
-                    checks.append(_doctor_check(
-                        "ok",
-                        f"connector {requirement.name}",
-                        f"Gmail account {info['email']} is reachable",
-                    ))
-            else:
+            spec = connector_kind_spec(kind)
+            if spec is None:
                 checks.append(_doctor_check(
                     "warn",
                     f"connector {requirement.name}",
                     f"{kind} is bound but has no live readiness adapter yet",
                 ))
+                continue
+            readiness = spec.readiness(
+                requirement, raw_binding, environment, live_connectors
+            )
+            checks.append(_doctor_check(
+                readiness.status,
+                f"connector {requirement.name}",
+                readiness.detail,
+            ))
     checked_human_configurations: set[str] = set()
     for route_name, raw_binding in connector_bindings.items():
         if (

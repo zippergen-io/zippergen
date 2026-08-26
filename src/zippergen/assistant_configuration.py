@@ -48,10 +48,16 @@ class ResolvedAssistantAction:
 def _assistant_sites(
     workflow: Workflow,
     module: ModuleType | None = None,
+    semantics: Mapping[str, object] | None = None,
 ) -> list[tuple[str, str]]:
     from zippergen.semantic import workflow_semantics
 
-    raw = workflow_semantics(workflow, module).get("action_sites") or []
+    model = (
+        semantics
+        if semantics is not None
+        else workflow_semantics(workflow, module)
+    )
+    raw = model.get("action_sites") or []
     result: list[tuple[str, str]] = []
     for site in raw if isinstance(raw, list) else []:
         if not isinstance(site, dict) or site.get("kind") != "assistant":
@@ -65,11 +71,12 @@ def _assistant_sites(
 def assistant_targets(
     workflow: Workflow,
     module: ModuleType | None = None,
+    semantics: Mapping[str, object] | None = None,
 ) -> list[str]:
     """Return valid participant and exact-action assignment targets."""
 
     targets: list[str] = ["default"]
-    for participant, action in _assistant_sites(workflow, module):
+    for participant, action in _assistant_sites(workflow, module, semantics):
         for target in (participant, f"{participant}.{action}"):
             if target not in targets:
                 targets.append(target)
@@ -89,7 +96,9 @@ def normalize_assistant_overrides(values: object) -> dict[str, str]:
         selected = str(backend).strip().casefold()
         if not name or selected not in set(ASSISTANT_BACKENDS):
             raise SystemExit(
-                "Assistant routes require TARGET=codex or TARGET=claude."
+                "Assistant routes require TARGET to select one of: "
+                + ", ".join(ASSISTANT_BACKENDS)
+                + "."
             )
         normalized[name] = selected
     return normalized
@@ -101,14 +110,19 @@ def effective_assistant_routes(
     overrides: Mapping[str, str] | None = None,
     *,
     module: ModuleType | None = None,
+    semantics: Mapping[str, object] | None = None,
 ) -> AssistantRouting:
     """Validate concrete assistant routes against the workflow."""
 
     default = str(default_backend or "").strip().casefold() or None
     if default not in {None, *ASSISTANT_BACKENDS}:
-        raise SystemExit("The default assistant backend must be codex or claude.")
+        raise SystemExit(
+            "The default assistant backend must be one of: "
+            + ", ".join(ASSISTANT_BACKENDS)
+            + "."
+        )
     selected = normalize_assistant_overrides(overrides)
-    known = set(assistant_targets(workflow, module)) - {"default"}
+    known = set(assistant_targets(workflow, module, semantics)) - {"default"}
     unknown = sorted(set(selected) - known)
     if unknown:
         raise SystemExit(
@@ -128,6 +142,7 @@ def project_assistant_routing(
     *,
     module: ModuleType | None = None,
     fallback_default: str | None = None,
+    semantics: Mapping[str, object] | None = None,
 ) -> AssistantRouting:
     """Resolve named project assignments to concrete CLI backends."""
 
@@ -136,6 +151,7 @@ def project_assistant_routing(
             workflow,
             fallback_default,
             module=module,
+            semantics=semantics,
         )
     profile = workspace.assistant_assignment_profile(workflow_spec)
     configurations = workspace.assistant_configurations()
@@ -152,8 +168,9 @@ def project_assistant_routing(
         backend = str(value.get("backend") or "").strip().casefold()
         if backend not in set(ASSISTANT_BACKENDS):
             raise SystemExit(
-                f"Assistant configuration {selected!r} must select codex or "
-                "claude."
+                f"Assistant configuration {selected!r} must select one of: "
+                + ", ".join(ASSISTANT_BACKENDS)
+                + "."
             )
         return selected, backend
 
@@ -177,6 +194,7 @@ def project_assistant_routing(
         default,
         overrides,
         module=module,
+        semantics=semantics,
     )
 
 
@@ -206,6 +224,7 @@ def resolved_assistant_actions(
     *,
     module: ModuleType | None = None,
     assignments: Mapping[str, object] | None = None,
+    semantics: Mapping[str, object] | None = None,
 ) -> list[ResolvedAssistantAction]:
     """Describe the effective backend of every assistant action site."""
 
@@ -221,7 +240,7 @@ def resolved_assistant_actions(
     assert isinstance(lifelines, Mapping)
     assert isinstance(actions, Mapping)
     rows: list[ResolvedAssistantAction] = []
-    for participant, action_name in _assistant_sites(workflow, module):
+    for participant, action_name in _assistant_sites(workflow, module, semantics):
         target = f"{participant}.{action_name}"
         action = definitions[action_name]
         configuration: str | None = None

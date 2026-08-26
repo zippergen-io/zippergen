@@ -22,7 +22,7 @@ def args(tmp_path):
 
 def test_run_status_names_a_running_deployment(monkeypatch, args) -> None:
     monkeypatch.setattr(
-        "zippergen.serve._resolved_deployment_name", lambda _: "shop-a1b2"
+        "zippergen.serve._deployment_name_for_project", lambda _: "shop-a1b2"
     )
     monkeypatch.setattr(
         "zippergen.deployment_platform.deployment_service_status",
@@ -38,7 +38,7 @@ def test_run_status_is_silent_when_the_deployment_is_stopped(
     monkeypatch, args
 ) -> None:
     monkeypatch.setattr(
-        "zippergen.serve._resolved_deployment_name", lambda _: "shop-a1b2"
+        "zippergen.serve._deployment_name_for_project", lambda _: "shop-a1b2"
     )
     monkeypatch.setattr(
         "zippergen.deployment_platform.deployment_service_status",
@@ -52,10 +52,9 @@ def test_run_status_is_silent_when_there_is_no_deployment(
 ) -> None:
     """A project without a deployment must not be told about one."""
 
-    def refuse(_):
-        raise SystemExit("no deployment for this project")
-
-    monkeypatch.setattr("zippergen.serve._resolved_deployment_name", refuse)
+    monkeypatch.setattr(
+        "zippergen.serve._deployment_name_for_project", lambda _: None
+    )
     assert _other_execution_line(args, owner="run") is None
 
 
@@ -112,7 +111,7 @@ def test_a_failed_service_query_warns_instead_of_going_quiet(
     """
 
     monkeypatch.setattr(
-        "zippergen.serve._resolved_deployment_name", lambda _: "shop-a1b2"
+        "zippergen.serve._deployment_name_for_project", lambda _: "shop-a1b2"
     )
 
     def broken(_name):
@@ -134,7 +133,7 @@ def test_an_unknown_service_state_warns_rather_than_reading_as_stopped(
     """"unknown" means the manager could not be asked -- not that it is idle."""
 
     monkeypatch.setattr(
-        "zippergen.serve._resolved_deployment_name", lambda _: "shop-a1b2"
+        "zippergen.serve._deployment_name_for_project", lambda _: "shop-a1b2"
     )
     monkeypatch.setattr(
         "zippergen.deployment_platform.deployment_service_status",
@@ -160,18 +159,41 @@ def test_a_failed_run_lookup_warns(monkeypatch, args) -> None:
 def test_expected_absence_stays_quiet_on_both_sides(monkeypatch, args) -> None:
     """Only failures speak up; a project without the other half says nothing."""
 
-    from zippergen.workspace import WorkspaceError
-
-    def no_deployment(_):
-        raise SystemExit("no deployment for this project")
-
     monkeypatch.setattr(
-        "zippergen.serve._resolved_deployment_name", no_deployment
+        "zippergen.serve._deployment_name_for_project", lambda _: None
     )
     assert _other_execution_line(args, owner="run") is None
 
-    def no_project(_self):
-        raise WorkspaceError("Not a ZipperGen project")
-
-    monkeypatch.setattr("zippergen.workspace.Workspace.current_run", no_project)
+    monkeypatch.setattr(
+        "zippergen.workspace.Workspace.current_run", lambda _self: None
+    )
     assert _other_execution_line(args, owner="deploy") is None
+
+
+@pytest.mark.parametrize(
+    "failure", [SystemExit("identity changed"), ValueError("bad json")]
+)
+def test_a_deployment_that_cannot_be_identified_warns(
+    monkeypatch, args, failure
+) -> None:
+    def broken(_args):
+        raise failure
+
+    monkeypatch.setattr("zippergen.serve._deployment_name_for_project", broken)
+    line = _other_execution_line(args, owner="run")
+    assert line is not None
+    assert line.startswith("WARN")
+    assert "could not be identified" in line
+
+
+def test_a_workspace_failure_is_not_misreported_as_no_run(monkeypatch, args) -> None:
+    from zippergen.workspace import WorkspaceError
+
+    def broken(_self):
+        raise WorkspaceError("workspace identity changed")
+
+    monkeypatch.setattr("zippergen.workspace.Workspace.current_run", broken)
+    line = _other_execution_line(args, owner="deploy")
+    assert line is not None
+    assert line.startswith("WARN")
+    assert "WorkspaceError" in line

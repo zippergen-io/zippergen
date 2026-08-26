@@ -33,30 +33,6 @@ class AssistantCliCheck:
     detail: str
 
 
-_REQUIRED_CLI_OPTIONS = {
-    "codex": (
-        "--ephemeral",
-        "--strict-config",
-        "--skip-git-repo-check",
-        "--cd",
-        "--sandbox",
-        "--ignore-user-config",
-        "--config",
-    ),
-    "claude": (
-        "--no-session-persistence",
-        "--input-format",
-        "--print",
-        "--permission-mode",
-        "--tools",
-        "--safe-mode",
-        "--no-chrome",
-        "--disable-slash-commands",
-        "--strict-mcp-config",
-    ),
-}
-
-
 _ASSISTANT_BASE_ENVIRONMENT = {
     "ALL_PROXY",
     "COLORTERM",
@@ -195,7 +171,15 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         name="codex",
         label="Codex CLI",
         login_environment=frozenset({"CODEX_HOME"}),
-        required_options=_REQUIRED_CLI_OPTIONS["codex"],
+        required_options=(
+            "--ephemeral",
+            "--strict-config",
+            "--skip-git-repo-check",
+            "--cd",
+            "--sandbox",
+            "--ignore-user-config",
+            "--config",
+        ),
         help_command=lambda executable: [executable, "exec", "--help"],
         command=_codex_command,
     ),
@@ -203,7 +187,17 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         name="claude",
         label="Claude Code",
         login_environment=frozenset({"CLAUDE_CONFIG_DIR"}),
-        required_options=_REQUIRED_CLI_OPTIONS["claude"],
+        required_options=(
+            "--no-session-persistence",
+            "--input-format",
+            "--print",
+            "--permission-mode",
+            "--tools",
+            "--safe-mode",
+            "--no-chrome",
+            "--disable-slash-commands",
+            "--strict-mcp-config",
+        ),
         help_command=lambda executable: [executable, "--help"],
         command=_claude_command,
     ),
@@ -290,7 +284,7 @@ def check_cli_assistant(backend: str) -> AssistantCliCheck:
     help_text = f"{completed.stdout}\n{completed.stderr}"
     missing = [
         option
-        for option in _REQUIRED_CLI_OPTIONS[selected]
+        for option in spec.required_options
         if option not in help_text
     ]
     if completed.returncode != 0:
@@ -409,7 +403,8 @@ def make_cli_assistant_backend(
 
     if default is not None and default not in set(ASSISTANT_BACKENDS):
         raise ValueError(
-            f"assistant backend must be 'codex' or 'claude', got {default!r}"
+            "assistant backend must be one of "
+            f"{', '.join(ASSISTANT_BACKENDS)}, got {default!r}"
         )
     selected_routes = {
         str(target): str(backend).casefold()
@@ -422,7 +417,8 @@ def make_cli_assistant_backend(
     )
     if invalid:
         raise ValueError(
-            "assistant routes must select codex or claude for: "
+            "assistant routes must select one of "
+            f"{', '.join(ASSISTANT_BACKENDS)} for: "
             + ", ".join(invalid)
         )
     root = Path(project_root or Path.cwd()).expanduser().resolve()

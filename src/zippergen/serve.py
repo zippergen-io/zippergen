@@ -117,6 +117,8 @@ from zippergen.connector_wiring import (
 )
 from zippergen.connectors import (
     CONNECTOR_KINDS,
+    CONNECTOR_SETTING_SPECS,
+    connector_kind_spec,
     connector_requirements_from_module,
 )
 from zippergen.models import (
@@ -955,12 +957,14 @@ def _print_status(status: dict[str, object]) -> None:
             )
 
 
-def _resolved_deployment_name(args) -> str:
-    """Return the private identity of this project's one deployment.
+def _deployment_name_for_project(args) -> str | None:
+    """Return this project's deployment name, or ``None`` when it has none.
 
     The stable workspace name belongs to the checkout's local identity.
     Reinitializing a path therefore cannot inherit the previous project's
-    deployment.
+    deployment.  A missing profile is the only absence.  An unreadable or
+    mismatched profile is an error, because it does not prove that no service
+    is running.
     """
 
     from zippergen.workspace import Workspace
@@ -969,10 +973,7 @@ def _resolved_deployment_name(args) -> str:
     name = workspace.directory.name
     path = _deployment_profile_path(name)
     if not path.exists():
-        raise SystemExit(
-            "This project has no deployment yet. Create one with "
-            "'zippergen deploy'."
-        )
+        return None
     profile = _load_deployment_profile(name)
     source = profile.get("source_cwd")
     profile_project_id = str(profile.get("project_id") or "")
@@ -991,6 +992,18 @@ def _resolved_deployment_name(args) -> str:
         raise SystemExit(
             f"Deployment profile {path} does not belong to this project. "
             "Remove it and deploy again."
+        )
+    return name
+
+
+def _resolved_deployment_name(args) -> str:
+    """Return the deployment name for commands that require one."""
+
+    name = _deployment_name_for_project(args)
+    if name is None:
+        raise SystemExit(
+            "This project has no deployment yet. Create one with "
+            "'zippergen deploy'."
         )
     return name
 
@@ -3159,79 +3172,53 @@ def _connector_configure_command(args) -> int:
     )
     existing = configurations.get(name) or existing
 
-    if kind == "telegram":
-        if args.spreadsheet_id or args.tab or args.account or args.query:
-            raise SystemExit(
-                "Telegram configuration uses --chat-id only."
-            )
-        chat_id = _guided_required_value(
-            args.chat_id,
-            label="Telegram chat id",
-            command=(
-                "zg connector configure NAME CONNECTION telegram "
-                "--chat-id CHAT_ID"
-            ),
-            default=str(existing.get("chat_id") or "") or None,
-        )
-        allowed_user_id = str(
-            args.allowed_user_id
-            or existing.get("allowed_user_id")
-            or chat_id
-        ).strip()
-        values = {
-            "connection": connection,
-            "kind": "telegram",
-            "chat_id": chat_id,
-            "allowed_user_id": allowed_user_id,
-        }
-        described = f"chat {chat_id}, trusted user {allowed_user_id}"
-    elif kind == "google-sheets":
-        if args.chat_id or args.allowed_user_id or args.account or args.query:
-            raise SystemExit(
-                "Google Sheets configuration uses --spreadsheet-id and --tab."
-            )
-        spreadsheet_id = _guided_required_value(
-            args.spreadsheet_id,
-            label="Google spreadsheet id",
-            command=(
-                "zg connector configure NAME CONNECTION google-sheets "
-                "--spreadsheet-id ID --tab TAB"
-            ),
-            default=str(existing.get("spreadsheet_id") or "") or None,
-        )
-        tab = _guided_required_value(
-            args.tab,
-            label="Google Sheets tab",
-            command=(
-                "zg connector configure NAME CONNECTION google-sheets "
-                "--spreadsheet-id ID --tab TAB"
-            ),
-            default=str(existing.get("tab") or "") or None,
-        )
-        values = {
-            "connection": connection,
-            "kind": "google-sheets",
-            "spreadsheet_id": spreadsheet_id,
-            "tab": tab,
-        }
-        described = f"tab {tab}"
-    elif kind == "gmail":
-        if args.chat_id or args.allowed_user_id or args.spreadsheet_id or args.tab:
-            raise SystemExit(
-                "Gmail configuration does not use --chat-id, "
-                "--spreadsheet-id, or --tab."
-            )
-        values = {
-            "connection": connection,
-            "kind": "gmail",
-            "account": str(args.account or existing.get("account") or "me"),
-            "query": str(
-                args.query or existing.get("query") or "is:unread in:inbox"
-            ),
-        }
-        described = f"query {values['query']!r}"
-    else:  # pragma: no cover - argparse restricts the choices
+    spec = connector_kind_spec(kind)
+    if spec is None:  # pragma: no cover - argparse and provider restrict this
         raise SystemExit(f"Unsupported connector kind {kind!r}.")
+
+    accepted = {setting.name for setting in spec.settings}
+    unused = [
+        setting
+        for setting in CONNECTOR_SETTING_SPECS
+        if setting.name not in accepted and getattr(args, setting.name, None)
+    ]
+    if unused:
+        options = ", ".join(
+            "--" + setting.name.replace("_", "-") for setting in unused
+        )
+        raise SystemExit(f"{spec.name} configuration does not use {options}.")
+
+    required_usage = " ".join(
+        f"--{setting.name.replace('_', '-')} {setting.metavar}"
+        for setting in spec.settings
+        if setting.required and setting.prompt
+    )
+    command = (
+        f"zg connector configure NAME CONNECTION {spec.name}"
+        + (f" {required_usage}" if required_usage else "")
+    )
+    values = {"connection": connection, "kind": spec.name}
+    for setting in spec.settings:
+        supplied = getattr(args, setting.name, None)
+        fallback = str(existing.get(setting.name) or "")
+        if not fallback and setting.default_from:
+            fallback = values.get(setting.default_from, "")
+        if not fallback:
+            fallback = setting.default or ""
+        if setting.prompt:
+            value = _guided_required_value(
+                supplied,
+                label=setting.label,
+                command=command,
+                default=fallback or None,
+            )
+        else:
+            value = str(supplied or fallback).strip()
+            if setting.required and not value:
+                raise SystemExit(f"{setting.label} is required. Use: {command}")
+        if value:
+            values[setting.name] = value
+    described = spec.describe(values)
 
     try:
         workspace.save_connector_configuration(name, values)
@@ -4201,16 +4188,20 @@ class _OtherExecution:
 
 
 def _other_deployment_execution(args) -> _OtherExecution:
-    from zippergen.workspace import WorkspaceError
     from zippergen.deployment_platform import (
         deployment_service_status,
         service_is_running,
     )
 
     try:
-        name = _resolved_deployment_name(args)
-    except (SystemExit, WorkspaceError):
-        # Expected absence: this project has no deployment.
+        name = _deployment_name_for_project(args)
+    except (SystemExit, Exception) as exc:
+        return _OtherExecution(
+            "unreadable",
+            "the project deployment could not be identified "
+            f"({type(exc).__name__}: {exc}); see zippergen deploy list.",
+        )
+    if name is None:
         return _OtherExecution("absent")
     try:
         service = deployment_service_status(name)
@@ -4238,13 +4229,11 @@ def _other_deployment_execution(args) -> _OtherExecution:
 
 
 def _other_run_execution(args) -> _OtherExecution:
-    from zippergen.workspace import Workspace, WorkspaceError
+    from zippergen.workspace import Workspace
 
     try:
         record = Workspace(getattr(args, "project", None)).current_run()
-    except (SystemExit, WorkspaceError):
-        return _OtherExecution("absent")
-    except Exception as exc:
+    except (SystemExit, Exception) as exc:
         return _OtherExecution(
             "unreadable",
             f"the selected durable run could not be read "
@@ -5418,39 +5407,16 @@ def _parse_cli_args(
         help="Required only when the connection supports several connector kinds.",
     )
     connector_configure.add_argument(
-        "--chat-id",
-        help=(
-            "Telegram chat id that receives approval messages. When omitted, "
-            "ask in the terminal."
-        ),
-    )
-    connector_configure.add_argument(
-        "--allowed-user-id",
-        help=(
-            "Telegram user id allowed to answer approvals. Defaults to the "
-            "chat id for a private chat; set it explicitly for a group."
-        ),
-    )
-    connector_configure.add_argument(
         "--project",
         help="Project root; defaults to discovery from the current directory.",
     )
-    connector_configure.add_argument(
-        "--spreadsheet-id",
-        help="Spreadsheet id, the long value in its URL.",
-    )
-    connector_configure.add_argument(
-        "--tab",
-        help="Sheet tab name.",
-    )
-    connector_configure.add_argument(
-        "--account",
-        help="Mailbox to read. Default 'me', the authorized account.",
-    )
-    connector_configure.add_argument(
-        "--query",
-        help="Gmail search that selects the messages to handle.",
-    )
+    for setting in CONNECTOR_SETTING_SPECS:
+        connector_configure.add_argument(
+            "--" + setting.name.replace("_", "-"),
+            dest=setting.name,
+            metavar=setting.metavar,
+            help=setting.help,
+        )
 
     connector_assign = connector_sub.add_parser(
         "assign",

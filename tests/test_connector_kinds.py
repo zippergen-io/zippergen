@@ -31,6 +31,51 @@ def test_every_declared_kind_has_a_provider_that_serves_it(spec) -> None:
 
 
 @pytest.mark.parametrize("spec", CONNECTOR_KIND_SPECS, ids=lambda s: s.name)
+def test_every_declared_kind_is_a_complete_adapter(spec) -> None:
+    """A name is not support: configuration, wiring and checks must come with it."""
+
+    assert spec.settings
+    assert spec.credential_environment_field
+    assert callable(spec.describe)
+    assert callable(spec.readiness)
+    assert all(
+        setting.name and setting.help and setting.metavar
+        for setting in spec.settings
+    )
+
+
+def test_registry_names_and_cli_settings_are_unambiguous() -> None:
+    from zippergen.connectors import CONNECTOR_SETTING_SPECS
+
+    assert len(set(CONNECTOR_KINDS)) == len(CONNECTOR_KINDS)
+    names = [setting.name for setting in CONNECTOR_SETTING_SPECS]
+    assert len(set(names)) == len(names)
+
+
+def test_generic_connector_consumers_do_not_branch_on_kind_names() -> None:
+    """Those modules must consume the adapter, not grow parallel registries."""
+
+    import pathlib
+    import re
+
+    source_root = pathlib.Path(__file__).resolve().parents[1] / "src" / "zippergen"
+    branch = re.compile(
+        r"(?:requirement\.)?kind\s*(?:==|!=)\s*[\"'](?:"
+        + "|".join(re.escape(name) for name in CONNECTOR_KINDS)
+        + r")[\"']"
+    )
+    offenders = [
+        name
+        for name in ("serve.py", "workspace.py")
+        if branch.search((source_root / name).read_text())
+    ]
+    assert not offenders, (
+        "generic connector consumers branch on a kind instead of reading its "
+        f"adapter: {offenders}"
+    )
+
+
+@pytest.mark.parametrize("spec", CONNECTOR_KIND_SPECS, ids=lambda s: s.name)
 def test_every_declared_kind_names_a_credential_its_provider_stores(spec) -> None:
     """A kind whose provider cannot hold its credential cannot be wired."""
 

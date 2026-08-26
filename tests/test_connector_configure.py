@@ -11,6 +11,8 @@ import tomllib
 import os
 from pathlib import Path
 
+import pytest
+
 from zippergen.serve import main
 from zippergen.workspace import Workspace
 
@@ -84,6 +86,27 @@ def test_it_saves_a_configuration_the_project_can_commit(tmp_path):
         "chat_id": "4242",
         "allowed_user_id": "4242",
     }
+
+
+def test_a_kind_refuses_settings_owned_by_another_kind(tmp_path):
+    """The union of CLI options is not the schema of every connector."""
+
+    from zippergen.workspace import WorkspaceError
+
+    root = _project(tmp_path)
+    workspace = Workspace(root, home=root.parent / "home")
+    workspace.save_provider_connection("approval-bot", {"kind": "telegram"})
+
+    with pytest.raises(WorkspaceError, match="do not belong to 'telegram'"):
+        workspace.save_connector_configuration(
+            "approval-chat",
+            {
+                "connection": "approval-bot",
+                "kind": "telegram",
+                "chat_id": "4242",
+                "spreadsheet_id": "not-a-telegram-setting",
+            },
+        )
 
 
 def test_telegram_setup_collects_the_chat_id_in_the_human_terminal(

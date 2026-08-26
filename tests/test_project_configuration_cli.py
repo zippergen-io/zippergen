@@ -1951,3 +1951,30 @@ def test_a_malformed_declaration_refuses_a_readiness_gate(
     assert main(["check", "--strict"]) != 0
     output = capsys.readouterr().out
     assert "deployment declaration" in output
+
+
+def test_the_configuration_report_parses_the_declaration_once(
+    malformed_declaration, monkeypatch, capsys
+):
+    """Downstream semantic readers consume the reported parse result."""
+
+    import zippergen.configuration_reporting as reporting
+    import zippergen.semantic as semantic
+
+    original = reporting.deployment_spec_from_module
+    calls = 0
+
+    def counted(module):
+        nonlocal calls
+        calls += 1
+        return original(module)
+
+    monkeypatch.setattr(reporting, "deployment_spec_from_module", counted)
+    monkeypatch.setattr(semantic, "deployment_spec_from_module", counted)
+
+    assert main(["config", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert calls == 1
+    assert any(
+        check["name"] == "model assignments" for check in report["checks"]
+    ), "a malformed deployment declaration must not discard workflow semantics"

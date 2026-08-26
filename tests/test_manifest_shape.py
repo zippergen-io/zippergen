@@ -17,14 +17,18 @@ import pytest
 
 MALFORMED = [
     ("providers", "not-a-section"),
+    ("providers", []),
     ("providers", {"connections": "not-a-table"}),
+    ("providers", {"connections": []}),
     ("providers", {"connections": {"bot": "not-a-table"}}),
     ("models", {"configurations": "not-a-table"}),
     ("models", {"configurations": {"fast": "not-a-table"}}),
     ("models", {"assignments": "not-a-table"}),
+    ("models", {"assignments": {"lifelines": []}}),
     ("models", {"assignments": {"lifelines": "not-a-table"}}),
     ("assistants", {"configurations": {"impl": ["not", "a", "table"]}}),
     ("connectors", {"bindings": "not-a-table"}),
+    ("connectors", {"bindings": []}),
     ("connectors", {"assignments": {"actions": 7}}),
 ]
 
@@ -71,6 +75,23 @@ def test_a_caller_replacement_is_decoded_exactly_like_the_file(tmp_path) -> None
     # Structure validated, and the typed literal preserved for the writer.
     assert decoded["assignments"]["default"] == "fast"
     assert decoded["configurations"]["fast"]["temperature"] == 0.2
+
+
+@pytest.mark.parametrize("section", ["providers", "models", "assistants", "connectors"])
+def test_a_falsey_malformed_file_section_is_not_treated_as_absent(
+    tmp_path, section
+) -> None:
+    (tmp_path / "zippergen.toml").write_text(
+        "schema_version = 2\n"
+        "name = 'shape'\n"
+        "specification_file = 'specification.md'\n"
+        f"{section} = []\n"
+    )
+
+    from zippergen.workspace import WorkspaceError
+
+    with pytest.raises(WorkspaceError, match="must be a table"):
+        Workspace(tmp_path).project_manifest()
 
 
 def test_every_declared_section_is_actually_produced(tmp_path) -> None:

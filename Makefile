@@ -24,6 +24,8 @@ docs-first-workflow: docs-check
 		"$(FIRST_WORKFLOW_DOC).tex"
 	@cp "$(DOC_BUILD_DIR)/$(FIRST_WORKFLOW_DOC).pdf" \
 		"$(DOC_DIR)/$(FIRST_WORKFLOW_DOC).pdf"
+	@shasum -a 256 "$(DOC_DIR)/$(FIRST_WORKFLOW_DOC).tex" | \
+		awk '{print $$1}' > "$(DOC_DIR)/$(FIRST_WORKFLOW_DOC).pdf.source.sha256"
 	@printf 'Built %s/%s.pdf\n' "$(DOC_DIR)" "$(FIRST_WORKFLOW_DOC)"
 
 docs-manual: docs-check
@@ -37,6 +39,8 @@ docs-manual: docs-check
 		"$(MANUAL_DOC).tex"
 	@cp "$(DOC_BUILD_DIR)/$(MANUAL_DOC).pdf" \
 		"$(DOC_DIR)/$(MANUAL_DOC).pdf"
+	@shasum -a 256 "$(DOC_DIR)/$(MANUAL_DOC).tex" | \
+		awk '{print $$1}' > "$(DOC_DIR)/$(MANUAL_DOC).pdf.source.sha256"
 	@printf 'Built %s/%s.pdf\n' "$(DOC_DIR)" "$(MANUAL_DOC)"
 
 docs-check:
