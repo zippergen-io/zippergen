@@ -1766,11 +1766,13 @@ def test_deploy_list_and_prune_find_a_deleted_projects_deployment(
     tmp_path, monkeypatch, capsys
 ):
     from zippergen import serve
+    from zippergen.deployment_profiles import DEPLOYMENT_PROFILE_SCHEMA_VERSION
 
     home = tmp_path / "home"
     deployments = home / "deployments"
     deployments.mkdir(parents=True)
     (deployments / "orphan.json").write_text(json.dumps({
+        "schema_version": DEPLOYMENT_PROFILE_SCHEMA_VERSION,
         "name": "orphan",
         "source_cwd": str(tmp_path / "deleted-project"),
         "project_id": "old-project",
@@ -3961,6 +3963,40 @@ def test_prune_quarantines_an_invalid_orphan_profile(
     assert len(archives) == 1
     assert (archives[0] / "profile" / "deployment.json").is_file()
     assert "Removed broken" in capsys.readouterr().out
+
+
+def test_prune_quarantines_an_incompatible_orphan_profile(
+    tmp_path, monkeypatch, capsys
+):
+    """Cleanup must not require an orphan's runtime schema to be readable."""
+
+    from zippergen.deployment_profiles import DEPLOYMENT_PROFILE_SCHEMA_VERSION
+
+    home = tmp_path / "home"
+    deployments = home / "deployments"
+    deployments.mkdir(parents=True)
+    old = deployments / "old.json"
+    old.write_text(json.dumps({
+        "schema_version": DEPLOYMENT_PROFILE_SCHEMA_VERSION - 1,
+        "name": "old",
+        "source_cwd": str(tmp_path / "project-that-is-gone"),
+    }))
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.setattr(
+        "zippergen.deployments._service_manager", lambda: "systemd"
+    )
+    monkeypatch.setattr(
+        "zippergen.deployments._deployment_service_status",
+        lambda _name: {"state": "not-loaded", "detail": "not installed"},
+    )
+
+    assert main(["deploy", "prune", "--yes"]) == 0
+
+    assert not old.exists()
+    archives = list((home / "trash" / "deployments").glob("old-*"))
+    assert len(archives) == 1
+    assert (archives[0] / "profile" / "deployment.json").is_file()
+    assert "Removed old" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

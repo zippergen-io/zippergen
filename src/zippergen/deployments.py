@@ -793,6 +793,7 @@ def remove_deployment_artifacts(
 def _deployment_inventory() -> list[dict[str, object]]:
     """Return every host deployment and whether its owning project still exists."""
 
+    from zippergen.deployment_profiles import _require_deployment_profile_schema
     from zippergen.deployment_platform import deployment_service_status
     from zippergen.workspace import Workspace, WorkspaceError
 
@@ -828,6 +829,14 @@ def _deployment_inventory() -> list[dict[str, object]]:
             continue
         name = str(profile.get("name") or path.stem)
         profile_loadable = True
+        try:
+            _require_deployment_profile_schema(profile, path)
+        except SystemExit:
+            # Inventory and removal need only the profile's identity and
+            # canonical managed paths. An incompatible profile must remain
+            # visible, and an orphan must still be removable, without teaching
+            # ordinary runtime readers to accept an old schema.
+            profile_loadable = False
         source = Path(str(profile.get("source_cwd") or "")).expanduser()
         orphaned = False
         ownership = "current"
