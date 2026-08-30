@@ -17,6 +17,9 @@ Highlights:
 - Crash-safe deployment publication through immutable bundle, environment,
   and secret generations selected by one atomic profile update.
 - Gmail, Google Sheets, Telegram, and coding-assistant integrations.
+- Coding-assistant results use each CLI's structured success envelope, so an
+  interrupted assistant cannot be committed as ordinary output merely because
+  its process exited zero.
 - External-action attempt, duration, and failure diagnostics, including honest
   incomplete attempts after process death.
 - Project manifests, workspace state, run records, deployment profiles, and the

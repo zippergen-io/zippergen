@@ -1,4 +1,5 @@
 import hashlib
+import json
 import subprocess
 import sys
 
@@ -7,6 +8,7 @@ import pytest
 from zippergen import (
     ActStmt,
     AssistantAction,
+    AssistantExecutionError,
     DeploymentSpec,
     Lifeline,
     Var,
@@ -20,12 +22,42 @@ from zippergen import (
     workflow,
     workflow_semantics,
 )
+from zippergen.assistant_backends import (
+    _decode_claude_output,
+    _decode_codex_output,
+)
 from zippergen.deployment_environment import bundle_deployment as _bundle_deployment
 from zippergen.serve import _validate_workflow
 from zippergen.syntax import Workflow
 
 
 Developer = Lifeline("Developer")
+
+
+def _successful_cli_stdout(command: list[str], result: str = "done") -> str:
+    if command[1:2] == ["exec"]:
+        events = [
+            {"type": "thread.started", "thread_id": "thread-1"},
+            {"type": "turn.started"},
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item-1",
+                    "type": "agent_message",
+                    "text": result,
+                },
+            },
+            {"type": "turn.completed", "usage": {}},
+        ]
+        return "\n".join(json.dumps(event) for event in events) + "\n"
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": result,
+        }
+    )
 
 
 @assistant(
@@ -246,7 +278,12 @@ def test_cli_backend_invokes_codex_without_a_shell(tmp_path, monkeypatch):
     def fake_run(command, **kwargs):
         captured["command"] = command
         captured.update(kwargs)
-        return subprocess.CompletedProcess(command, 0, stdout="done\n", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=_successful_cli_stdout(command),
+            stderr="",
+        )
 
     monkeypatch.setattr("zippergen.assistant_backends.subprocess.run", fake_run)
     backend = make_cli_assistant_backend("codex", project_root=tmp_path)
@@ -273,6 +310,7 @@ def test_cli_backend_invokes_codex_without_a_shell(tmp_path, monkeypatch):
         "agents.enabled=false",
         "--config",
         "sandbox_workspace_write.network_access=false",
+        "--json",
         "-",
     ]
     assert captured["cwd"] == tmp_path
@@ -280,6 +318,118 @@ def test_cli_backend_invokes_codex_without_a_shell(tmp_path, monkeypatch):
     assert captured["check"] is False
     assert captured["capture_output"] is True
     assert captured["env"]
+
+
+def test_claude_cli_failure_envelope_is_not_a_string_result():
+    failed = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "result": "Execution error",
+        }
+    )
+    with pytest.raises(
+        AssistantExecutionError,
+        match="unsuccessful result: Execution error",
+    ):
+        _decode_claude_output(failed)
+
+
+def test_claude_cli_does_not_guess_failure_from_result_spelling():
+    output = _successful_cli_stdout(["/tools/claude"], "Execution error")
+
+    assert _decode_claude_output(output) == "Execution error"
+
+
+@pytest.mark.parametrize(
+    ("terminal_events", "message"),
+    [
+        (
+            [{"type": "turn.failed", "error": {"message": "interrupted"}}],
+            "failed turn: interrupted",
+        ),
+        ([], "without reporting a completed turn"),
+    ],
+)
+def test_codex_cli_requires_a_completed_turn(
+    terminal_events,
+    message,
+):
+    events = [
+        {"type": "thread.started", "thread_id": "thread-1"},
+        {"type": "turn.started"},
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item-1",
+                "type": "agent_message",
+                "text": "Execution error",
+            },
+        },
+        *terminal_events,
+    ]
+    failed = "\n".join(json.dumps(event) for event in events) + "\n"
+
+    with pytest.raises(AssistantExecutionError, match=message):
+        _decode_codex_output(failed)
+
+
+def test_failed_cli_result_is_retried_after_durable_resume(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "zippergen.assistant_backends.shutil.which",
+        lambda name: f"/tools/{name}",
+    )
+    outputs = iter(
+        [
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "is_error": True,
+                    "result": "Execution error",
+                }
+            ),
+            _successful_cli_stdout(["/tools/claude"], "fixed"),
+        ]
+    )
+    calls = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=next(outputs),
+            stderr="",
+        )
+
+    monkeypatch.setattr("zippergen.assistant_backends.subprocess.run", fake_run)
+    backend = make_cli_assistant_backend("claude", project_root=tmp_path)
+    store = str(tmp_path / "assistant.sqlite")
+
+    with pytest.raises(RuntimeError, match="Execution error"):
+        run_sqlite(
+            assistant_round,
+            [Developer],
+            {"Developer": {"request": "fix it"}},
+            store_path=store,
+            assistant_backend=backend,
+            timeout=5,
+        )
+
+    resumed = run_sqlite(
+        assistant_round,
+        [Developer],
+        {"Developer": {"request": "fix it"}},
+        store_path=store,
+        assistant_backend=backend,
+        timeout=5,
+    )
+
+    assert resumed == "fixed"
+    assert calls == 2
 
 
 def test_cli_backend_enforces_read_only_codex_and_claude_modes(
@@ -294,7 +444,12 @@ def test_cli_backend_enforces_read_only_codex_and_claude_modes(
 
     def fake_run(command, **kwargs):
         commands.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout="done\n", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=_successful_cli_stdout(command),
+            stderr="",
+        )
 
     monkeypatch.setattr("zippergen.assistant_backends.subprocess.run", fake_run)
 
@@ -327,7 +482,8 @@ def test_cli_backend_enforces_read_only_codex_and_claude_modes(
         "--input-format",
     ]
     assert commands[1][4] == "text"
-    assert commands[1][5:7] == ["--permission-mode", "plan"]
+    assert commands[1][5:7] == ["--output-format", "json"]
+    assert commands[1][7:9] == ["--permission-mode", "plan"]
     assert "--safe-mode" in commands[1]
     assert "--strict-mcp-config" in commands[1]
     assert "Read,Glob,Grep" in commands[1]
@@ -354,7 +510,12 @@ def test_cli_backends_keep_prompts_out_of_argv_and_isolate_secrets(
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, stdout="done\n", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=_successful_cli_stdout(command),
+            stderr="",
+        )
 
     monkeypatch.setattr("zippergen.assistant_backends.subprocess.run", fake_run)
     private_input = "private-message-731"
@@ -395,7 +556,12 @@ def test_claude_shell_requires_explicit_opt_in(tmp_path, monkeypatch):
         "zippergen.assistant_backends.subprocess.run",
         lambda command, **_kwargs: (
             commands.append(command)
-            or subprocess.CompletedProcess(command, 0, stdout="done\n", stderr="")
+            or subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=_successful_cli_stdout(command),
+                stderr="",
+            )
         ),
     )
 
@@ -438,7 +604,7 @@ def test_cli_backend_allows_configured_external_tools_only_by_opt_in(
             or subprocess.CompletedProcess(
                 command,
                 0,
-                stdout="done\n",
+                stdout=_successful_cli_stdout(command),
                 stderr="",
             )
         ),

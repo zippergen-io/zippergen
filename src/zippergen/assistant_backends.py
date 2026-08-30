@@ -103,6 +103,7 @@ def _codex_command(
                 "sandbox_workspace_write.network_access=false",
             ]
         )
+    command.append("--json")
     command.append("-")
     return command
 
@@ -121,6 +122,8 @@ def _claude_command(
         "--no-session-persistence",
         "--input-format",
         "text",
+        "--output-format",
+        "json",
         "--permission-mode",
         "plan" if action.access == "read-only" else "acceptEdits",
         "--tools",
@@ -138,15 +141,96 @@ def _claude_command(
     return command
 
 
+def _decode_codex_output(stdout: str) -> str:
+    """Return the final message from one successful Codex JSONL turn."""
+
+    completed = False
+    final_message: str | None = None
+    failure: str | None = None
+    for line_number, raw in enumerate(stdout.splitlines(), start=1):
+        if not raw.strip():
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise AssistantExecutionError(
+                "Codex CLI returned malformed JSONL at line "
+                f"{line_number}: {raw[:200]!r}"
+            ) from exc
+        if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+            raise AssistantExecutionError(
+                "Codex CLI returned a JSONL event without a string 'type' at "
+                f"line {line_number}."
+            )
+
+        event_type = event["type"]
+        if event_type in {"error", "turn.failed"}:
+            detail = event.get("message") or event.get("error") or event_type
+            if isinstance(detail, dict):
+                detail = detail.get("message") or detail
+            failure = " ".join(str(detail).split())[:500]
+        elif event_type == "item.completed":
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("type") == "agent_message":
+                text = item.get("text")
+                if not isinstance(text, str):
+                    raise AssistantExecutionError(
+                        "Codex CLI completed an agent message without text."
+                    )
+                final_message = text
+        elif event_type == "turn.completed":
+            completed = True
+
+    if failure is not None:
+        raise AssistantExecutionError(f"Codex CLI reported a failed turn: {failure}")
+    if not completed:
+        raise AssistantExecutionError(
+            "Codex CLI ended without reporting a completed turn."
+        )
+    if final_message is None:
+        raise AssistantExecutionError(
+            "Codex CLI completed without a final agent message."
+        )
+    return final_message
+
+
+def _decode_claude_output(stdout: str) -> str:
+    """Return the result from one successful Claude Code JSON envelope."""
+
+    try:
+        result = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise AssistantExecutionError(
+            f"Claude Code returned malformed JSON: {stdout[:200]!r}"
+        ) from exc
+    if not isinstance(result, dict) or result.get("type") != "result":
+        raise AssistantExecutionError(
+            "Claude Code returned JSON without a result envelope."
+        )
+
+    subtype = result.get("subtype")
+    value = result.get("result")
+    if subtype != "success" or result.get("is_error") is not False:
+        detail = value if isinstance(value, str) and value.strip() else subtype
+        detail = " ".join(str(detail or "unknown failure").split())[:500]
+        raise AssistantExecutionError(
+            f"Claude Code reported an unsuccessful result: {detail}"
+        )
+    if not isinstance(value, str):
+        raise AssistantExecutionError(
+            "Claude Code reported success without a string result."
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class AssistantBackendSpec:
     """Everything ZipperGen needs in order to run one coding assistant.
 
-    Declaring a backend's *name* was never the hard part. Its label, its
-    login locations, its help command and its argv were each an
-    ``if codex else claude`` somewhere else -- so a newly declared backend
-    could pass every declaration test and then be executed, silently, through
-    the Claude branch.
+    Declaring a backend's *name* was never the hard part. Its label, login
+    locations, help command, argv, and result envelope are all backend-specific.
+    Keeping them here prevents a newly declared backend from passing the name
+    tests and then being executed or decoded through another backend's rules.
 
     A backend exists here or not at all.
     """
@@ -164,6 +248,8 @@ class AssistantBackendSpec:
     help_command: Callable[[str], list[str]]
     #: How to build the run command for one action.
     command: Callable[[str, Path, "AssistantAction"], list[str]]
+    #: How to distinguish a completed result from a CLI-level failure.
+    decode_output: Callable[[str], str]
 
 
 ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
@@ -179,9 +265,11 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
             "--sandbox",
             "--ignore-user-config",
             "--config",
+            "--json",
         ),
         help_command=lambda executable: [executable, "exec", "--help"],
         command=_codex_command,
+        decode_output=_decode_codex_output,
     ),
     AssistantBackendSpec(
         name="claude",
@@ -190,6 +278,7 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         required_options=(
             "--no-session-persistence",
             "--input-format",
+            "--output-format",
             "--print",
             "--permission-mode",
             "--tools",
@@ -200,6 +289,7 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         ),
         help_command=lambda executable: [executable, "--help"],
         command=_claude_command,
+        decode_output=_decode_claude_output,
     ),
 )
 
@@ -496,6 +586,7 @@ def make_cli_assistant_backend(
                 f"{completed.returncode}: {detail[:500]}"
             )
         output_name, _output_type = action.outputs[0]
-        return {output_name: _coerce_result(action, completed.stdout)}
+        output = spec.decode_output(completed.stdout)
+        return {output_name: _coerce_result(action, output)}
 
     return run_assistant

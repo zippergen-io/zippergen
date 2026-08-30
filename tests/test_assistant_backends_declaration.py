@@ -71,12 +71,10 @@ def test_nothing_runnable_is_left_undeclared() -> None:
 
 @pytest.mark.parametrize("spec", ASSISTANT_BACKEND_SPECS, ids=lambda s: s.name)
 def test_every_declared_backend_brings_its_own_adapter(spec) -> None:
-    """Label, help command and argv are per-backend and must be declared.
+    """Execution and result rules are per-backend and must be declared.
 
-    These were `if codex else claude` in three places, so a third backend
-    could satisfy every name-based test and then be executed through the
-    Claude branch -- with Claude's flags, Claude's permission model, and
-    Claude's tool list.
+    Otherwise a third backend could satisfy every name-based test and then be
+    executed or decoded through another CLI's adapter.
     """
 
     assert spec.label and spec.label != spec.name
@@ -84,6 +82,7 @@ def test_every_declared_backend_brings_its_own_adapter(spec) -> None:
     assert spec.login_environment
     assert callable(spec.help_command)
     assert callable(spec.command)
+    assert callable(spec.decode_output)
 
     help_command = spec.help_command("/usr/bin/thing")
     assert help_command[0] == "/usr/bin/thing"
@@ -96,6 +95,11 @@ def test_backend_adapters_are_not_shared_implicitly() -> None:
     assert len(set(commands)) == len(commands), (
         "each backend needs its own command adapter, even when two CLIs happen "
         "to accept similar options today"
+    )
+    decoders = [spec.decode_output for spec in ASSISTANT_BACKEND_SPECS]
+    assert len(set(decoders)) == len(decoders), (
+        "each backend needs its own result decoder because CLI success "
+        "envelopes are backend-specific"
     )
 
 

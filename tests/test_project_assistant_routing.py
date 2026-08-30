@@ -14,6 +14,29 @@ from zippergen.serve import main
 from zippergen.workspace import Workspace
 
 
+def _successful_cli_stdout(command: list[str]) -> str:
+    if command[1:2] == ["exec"]:
+        return "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "done"},
+                    }
+                ),
+                json.dumps({"type": "turn.completed"}),
+            ]
+        )
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "done",
+        }
+    )
+
+
 
 def _one_deployment(home, suffix=".json"):
     """The project's one deployment, whatever name was derived for it."""
@@ -286,7 +309,12 @@ def test_effective_backend_uses_action_and_participant_project_routing(
         "zippergen.assistant_backends.subprocess.run",
         lambda command, **_kwargs: (
             commands.append(command)
-            or subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
+            or subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=_successful_cli_stdout(command),
+                stderr="",
+            )
         ),
     )
 
