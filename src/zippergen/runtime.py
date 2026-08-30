@@ -17,7 +17,10 @@ from typing import cast
 import time
 import textwrap
 
-from zippergen.availability import require_workflow_availability
+from zippergen.availability import (
+    AvailabilityViolation,
+    require_workflow_availability,
+)
 from zippergen.planner import _exec_planner, _validate_planner_spec
 from zippergen.human_tasks import validate_human_action_result
 from zippergen.errors import WorkflowCancelled
@@ -301,11 +304,11 @@ def _eval(expr, env: Env) -> object:
             if v.name not in env:
                 if v.has_default:
                     return _clone_zvalue(v.default, v.type)
-                raise RuntimeError(
-                    f"Variable {v.name!r} is not available at "
-                    f"lifeline {threading.current_thread().name!r}. It must be "
-                    "an owned workflow input, an explicit default, an action "
-                    "output, or a received value."
+                lifeline = threading.current_thread().name
+                raise AvailabilityViolation.for_read(
+                    lifeline,
+                    v.name,
+                    f"runtime expression on {lifeline!r}",
                 )
             return env[v.name]
         case LitExpr(value=val):

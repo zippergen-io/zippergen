@@ -11,7 +11,7 @@ from zippergen.availability import (
     workflow_availability_error,
 )
 from zippergen.planner import _validate_planner_spec
-from zippergen.runtime import run
+from zippergen.runtime import _eval, run
 from zippergen.serve import main
 from zippergen.syntax import (
     ActStmt,
@@ -234,6 +234,18 @@ def test_runtime_backstop_refuses_an_invalid_direct_ir_workflow():
 
     with pytest.raises(AvailabilityViolation, match="value"):
         run(workflow, [B], {})
+
+
+def test_runtime_expression_uses_the_shared_availability_violation():
+    value = Var("value", str)
+
+    with pytest.raises(AvailabilityViolation) as raised:
+        _eval(VarExpr(value), {})
+
+    message = str(raised.value)
+    assert "runtime expression" in message
+    assert "value" in message
+    assert "available on every control-flow path" in message
 
 
 def test_cli_validate_rejects_the_missing_receive(tmp_path, capsys):

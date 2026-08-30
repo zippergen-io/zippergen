@@ -40,6 +40,20 @@ __all__ = [
 class AvailabilityViolation(ValueError):
     """A participant reads a variable absent on at least one control path."""
 
+    @classmethod
+    def for_read(
+        cls,
+        lifeline: str,
+        variable: str,
+        operation: str,
+    ) -> "AvailabilityViolation":
+        return cls(
+            f"{operation} reads {variable!r}, but participant {lifeline!r} does "
+            "not definitely have it. A participant may read only an owned "
+            "workflow input, an explicit default, an action output, or a "
+            "received value available on every control-flow path."
+        )
+
 
 @dataclass
 class AvailabilityState:
@@ -60,12 +74,7 @@ class AvailabilityState:
     def require(self, lifeline: str, variable: str, operation: str) -> None:
         if variable in self.scopes.get(lifeline, set()):
             return
-        raise AvailabilityViolation(
-            f"{operation} reads {variable!r}, but participant {lifeline!r} does "
-            "not definitely have it. A participant may read only an owned "
-            "workflow input, an explicit default, an action output, or a "
-            "received value available on every control-flow path."
-        )
+        raise AvailabilityViolation.for_read(lifeline, variable, operation)
 
     def replace_with(self, other: "AvailabilityState") -> None:
         self.scopes = {
