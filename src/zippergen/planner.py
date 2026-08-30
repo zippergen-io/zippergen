@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 import threading
 
+from zippergen.availability import AvailabilityState, AvailabilityViolation
 from zippergen.syntax import (
     Json, LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction,
     HumanAction,
@@ -1158,16 +1159,32 @@ def _validate_planner_spec(
     # ---- 10 + 11. Scope and return-variable scope ----
     def check_scope_and_return() -> str | None:
         # Seed each lifeline's scope from the signature annotations.
-        scope: dict[str, set[str]] = {}
+        scope = AvailabilityState.empty()
         for arg in fn_node.args.args:
             ann = arg.annotation
             owner = (ann.right.id
                      if isinstance(ann, _ast.BinOp) and isinstance(ann.op, _ast.MatMult)
                      and isinstance(ann.right, _ast.Name)
                      else caller)
-            scope.setdefault(owner, set()).add(arg.arg)
+            scope.bind(owner, (arg.arg,))
 
-        def _walk(body: list, sc: dict[str, set[str]]) -> str | None:
+        def _condition_reads(stmt: _ast.If | _ast.While) -> tuple[str, tuple[str, ...]]:
+            if not (
+                isinstance(stmt.test, _ast.BinOp)
+                and isinstance(stmt.test.op, _ast.MatMult)
+                and isinstance(stmt.test.right, _ast.Name)
+            ):
+                return caller, ()
+            names = tuple(
+                sorted(
+                    node.id
+                    for node in _ast.walk(stmt.test.left)
+                    if isinstance(node, _ast.Name)
+                )
+            )
+            return stmt.test.right.id, names
+
+        def _walk(body: list, sc: AvailabilityState) -> None:
             for stmt in body:
                 if isinstance(stmt, _ast.AnnAssign) and isinstance(stmt.target, _ast.Name):
                     ll = stmt.target.id
@@ -1177,13 +1194,18 @@ def _validate_planner_spec(
                             if isinstance(ann, _ast.Tuple) else [])
                     if isinstance(stmt.value, _ast.Call):
                         for arg in stmt.value.args:
-                            if isinstance(arg, _ast.Name) and arg.id not in sc.get(ll, set()):
-                                fn_n = (stmt.value.func.id
-                                        if isinstance(stmt.value.func, _ast.Name) else "?")
-                                return (f"`{ll}: ... = {fn_n}(...)` uses `{arg.id}` "
-                                        f"but `{ll}` has not received it. "
-                                        f"Forward it: `Sender({arg.id}) >> {ll}({arg.id})`.")
-                    sc.setdefault(ll, set()).update(outs)
+                            if isinstance(arg, _ast.Name):
+                                fn_n = (
+                                    stmt.value.func.id
+                                    if isinstance(stmt.value.func, _ast.Name)
+                                    else "?"
+                                )
+                                sc.require(
+                                    ll,
+                                    arg.id,
+                                    f"action {fn_n!r} on {ll!r}",
+                                )
+                    sc.bind(ll, outs)
 
                 elif (isinstance(stmt, _ast.Expr)
                       and isinstance(stmt.value, _ast.BinOp)
@@ -1192,51 +1214,52 @@ def _validate_planner_spec(
                     if isinstance(lhs2, _ast.Call) and isinstance(lhs2.func, _ast.Name):
                         sender = lhs2.func.id
                         for arg in lhs2.args:
-                            if isinstance(arg, _ast.Name) and arg.id not in sc.get(sender, set()):
-                                rn = (rhs2.func.id if isinstance(rhs2, _ast.Call)
-                                      and isinstance(rhs2.func, _ast.Name) else "?")
-                                return (f"`{sender}({arg.id}) >> {rn}(...)` sends `{arg.id}` "
-                                        f"but `{sender}` has not received it.")
+                            if isinstance(arg, _ast.Name):
+                                sc.require(
+                                    sender,
+                                    arg.id,
+                                    f"message from {sender!r}",
+                                )
                     if isinstance(rhs2, _ast.Call) and isinstance(rhs2.func, _ast.Name):
                         rcv = rhs2.func.id
-                        for arg in rhs2.args:
-                            if isinstance(arg, _ast.Name):
-                                sc.setdefault(rcv, set()).add(arg.id)
+                        sc.bind(
+                            rcv,
+                            [arg.id for arg in rhs2.args if isinstance(arg, _ast.Name)],
+                        )
 
                 elif isinstance(stmt, _ast.If):
-                    sc_t = {k: set(v) for k, v in sc.items()}
-                    sc_f = {k: set(v) for k, v in sc.items()}
-                    err = _walk(stmt.body, sc_t) or _walk(stmt.orelse, sc_f)
-                    if err:
-                        return err
-                    for ll in set(sc_t) | set(sc_f):
-                        sc[ll] = sc_t.get(ll, set()) & sc_f.get(ll, set())
+                    owner, reads = _condition_reads(stmt)
+                    for name in reads:
+                        sc.require(owner, name, f"if guard on {owner!r}")
+                    sc_t = sc.copy()
+                    sc_f = sc.copy()
+                    _walk(stmt.body, sc_t)
+                    _walk(stmt.orelse, sc_f)
+                    sc.merge_alternatives(sc_t, sc_f)
 
                 elif isinstance(stmt, _ast.While):
-                    sc_body = {k: set(v) for k, v in sc.items()}
-                    sc_exit = {k: set(v) for k, v in sc.items()}
-                    err = _walk(stmt.body, sc_body) or _walk(stmt.orelse, sc_exit)
-                    if err:
-                        return err
-                    for ll in set(sc_exit):
-                        sc[ll] = sc_exit.get(ll, set())
-            return None
+                    owner, reads = _condition_reads(stmt)
+                    for name in reads:
+                        sc.require(owner, name, f"while guard on {owner!r}")
+                    sc_body = sc.copy()
+                    sc_exit = sc.copy()
+                    _walk(stmt.body, sc_body)
+                    _walk(stmt.orelse, sc_exit)
+                    sc.replace_with(sc_exit)
 
-        err = _walk(fn_node.body, scope)
-        if err:
-            return err
+        try:
+            _walk(fn_node.body, scope)
 
-        # Check that the return variable is in scope on all paths.
-        ret = stmts[-1]
-        if (isinstance(ret, _ast.Return)
-                and isinstance(ret.value, _ast.BinOp)
-                and isinstance(ret.value.left, _ast.Name)
-                and isinstance(ret.value.right, _ast.Name)):
-            ret_var, ret_ll = ret.value.left.id, ret.value.right.id
-            if ret_var not in scope.get(ret_ll, set()):
-                return (f"`return {ret_var} @ {ret_ll}`: `{ret_var}` is not available on "
-                        f"`{ret_ll}` on all control-flow paths. Every branch must produce "
-                        f"or forward `{ret_var}` to `{ret_ll}` before the return.")
+            # Check that the return variable is in scope on all paths.
+            ret = stmts[-1]
+            if (isinstance(ret, _ast.Return)
+                    and isinstance(ret.value, _ast.BinOp)
+                    and isinstance(ret.value.left, _ast.Name)
+                    and isinstance(ret.value.right, _ast.Name)):
+                ret_var, ret_ll = ret.value.left.id, ret.value.right.id
+                scope.require(ret_ll, ret_var, f"return from {ret_ll!r}")
+        except AvailabilityViolation as exc:
+            return str(exc)
         return None
 
     # ---- 12. Inputs used ----

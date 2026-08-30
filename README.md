@@ -12,12 +12,8 @@ services.
 
 You write one protocol. It says who sends what to whom, who calls a model, and
 who owns each decision. ZipperGen works out the program each participant runs,
-and runs them.
-
-For well-formed workflows in ZipperGen's formally covered core, those programs
-cannot deadlock. This is proved, not just tested: the core projection theorem
-is checked by machine in Lean 4. Parallel regions are covered by the separate
-EXPRESS/SOS result listed below.
+and runs them. For well-formed workflows covered by ZipperGen's formal model,
+those programs cannot deadlock. This is [proved formally](#formal-foundation).
 
 ---
 
@@ -93,11 +89,17 @@ ZipperGen project: email-approval
   zippergen.toml     created
   specification.md   created
   AGENTS.md          created
-  CLAUDE.md           created
+  CLAUDE.md          created
 ```
 
 Now say what you want. You can write the workflow yourself, or open a coding
-agent in that directory and ask for it:
+agent in that directory:
+
+```bash
+claude  # or: codex
+```
+
+Then ask:
 
 > Build a ZipperGen workflow that watches a mailbox directory, asks an LLM to
 > draft a short reply to each new message, and asks me to approve it before it
@@ -229,9 +231,7 @@ hand.
 The Writer is told in every round whether to go on, because it has work to do
 inside the loop. It is never told whether approval was granted at Mailbox,
 because it does nothing either way. So that decision is simply not in its
-program. It cannot wait for it, and it cannot block on it.
-
-This is what projection means, and it is what the Lean proof is about.
+program. It cannot wait for it, and it cannot block on it. This is what projection means.
 
 ## One configuration pattern
 

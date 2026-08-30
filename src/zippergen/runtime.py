@@ -17,6 +17,7 @@ from typing import cast
 import time
 import textwrap
 
+from zippergen.availability import require_workflow_availability
 from zippergen.planner import _exec_planner, _validate_planner_spec
 from zippergen.human_tasks import validate_human_action_result
 from zippergen.errors import WorkflowCancelled
@@ -297,7 +298,16 @@ class _FormulaProbeEnv(_CondEnv):
 def _eval(expr, env: Env) -> object:
     match expr:
         case VarExpr(var=v):
-            return env.get(v.name, v.default)
+            if v.name not in env:
+                if v.has_default:
+                    return _clone_zvalue(v.default, v.type)
+                raise RuntimeError(
+                    f"Variable {v.name!r} is not available at "
+                    f"lifeline {threading.current_thread().name!r}. It must be "
+                    "an owned workflow input, an explicit default, an action "
+                    "output, or a received value."
+                )
+            return env[v.name]
         case LitExpr(value=val):
             return val
         case _:
@@ -1397,6 +1407,8 @@ def run(
     dict lifeline_name → final env dict
     Raises RuntimeError if any lifeline thread raised an exception.
     """
+    require_workflow_availability(wf, initial_envs)
+
     if llm_backend is None:
         llm_backend = mock_llm
 
@@ -1431,9 +1443,9 @@ def run(
         # Seed env with Var defaults so conditions see proper values before
         # any assignment has run, then override with caller-supplied values.
         env = {
-            k: _clone_zvalue(v.default, v.type)
-            for k, v in wf.ns.items()
-            if isinstance(v, Var)
+            v.name: _clone_zvalue(v.default, v.type)
+            for v in wf.ns.values()
+            if isinstance(v, Var) and v.has_default
         }
         supplied = initial_envs.get(ll.name, {})
         env.update(supplied)

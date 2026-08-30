@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 from types import ModuleType
 
+from zippergen.availability import workflow_availability_error
 from zippergen.connectors import connector_requirements_from_module
 from zippergen.deployment import deployment_spec_from_module
 from zippergen.projection import project
@@ -92,6 +93,17 @@ def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, objec
             "name": "lifelines",
             "detail": f"{len(lifelines)} unique lifeline(s): {', '.join(names)}",
         })
+
+    availability_error = workflow_availability_error(workflow)
+    checks.append({
+        "status": "fail" if availability_error is not None else "ok",
+        "name": "variable availability",
+        "detail": (
+            availability_error
+            if availability_error is not None
+            else "every participant reads only values definitely available locally"
+        ),
+    })
 
     projections: dict[str, str] = {}
     for lifeline in lifelines:

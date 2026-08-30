@@ -425,8 +425,9 @@ Google connectors need the optional extra, `zippergen[google]`, in the
 environment that runs `zg`; `zg provider check` reports it as *google support
 installed*. `zg provider authorize CONNECTION` then authorizes Gmail and Google
 Sheets together when the workflow requires both, saving the credential on this
-machine. Scopes are not typed: they follow from what the requirements declare. Declare `access="read-only"` for readers. Use
-`read-write` only when an action modifies Gmail or Sheets. That declaration
+machine. Scopes are not typed: they follow from what the requirements declare.
+Declare `access="read-only"` for readers. Use `access="read-write"` only when an
+action modifies Gmail or Sheets. That declaration
 selects the narrowest supported Google OAuth scope, and deployment refuses to
 start if the granted scopes do not cover it.
 

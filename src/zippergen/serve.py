@@ -115,6 +115,7 @@ from zippergen.deployment_checks import (
 from zippergen.connector_wiring import (
     _start_deployment_connector_workers,
 )
+from zippergen.availability import AvailabilityViolation
 from zippergen.connectors import (
     CONNECTOR_KINDS,
     CONNECTOR_SETTING_SPECS,
@@ -1341,6 +1342,9 @@ def _run_workflow_from_project(args, workspace) -> int:
                 connector_thread.start()
                 print("External human connector started for this run.")
             result = wf(**inputs)
+    except AvailabilityViolation as exc:
+        # An author mistake, not a crash: report it the way validation does.
+        raise SystemExit(f"variable availability: {exc}") from exc
     finally:
         if connector_stop is not None:
             connector_stop.set()

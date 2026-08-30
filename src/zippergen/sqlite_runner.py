@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+from zippergen.availability import require_workflow_availability
 from zippergen.control import program_fingerprint
 from zippergen.errors import WorkflowCancelled
 from zippergen.projection import project
@@ -40,9 +41,9 @@ _NO_RESULT = object()
 
 def _default_env(wf: Workflow) -> dict:
     return {
-        k: _clone_zvalue(v.default, v.type)
-        for k, v in wf.ns.items()
-        if isinstance(v, Var)
+        v.name: _clone_zvalue(v.default, v.type)
+        for v in wf.ns.values()
+        if isinstance(v, Var) and v.has_default
     }
 
 
@@ -78,6 +79,7 @@ class LocalSupervisor:
         trace=None,
         timeout: float = 60.0,
     ) -> None:
+        require_workflow_availability(wf, initial_envs)
         self.wf = wf
         self.lifelines = tuple(lifelines) if lifelines is not None else _ordered_workflow_lifelines(wf)
         self.initial_envs = initial_envs or {}

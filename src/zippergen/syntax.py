@@ -157,11 +157,25 @@ class ZTypeAtLifeline:
 # Var
 # ---------------------------------------------------------------------------
 
+class _NoVarDefault:
+    def __deepcopy__(self, memo) -> "_NoVarDefault":
+        return self
+
+
+_NO_VAR_DEFAULT = _NoVarDefault()
+
+
 @dataclass(frozen=True)
 class Var:
     name: str
     type: ZType
-    default: object = None  # optional Python literal default
+    default: object = _NO_VAR_DEFAULT
+
+    @property
+    def has_default(self) -> bool:
+        """Whether the author supplied an initial value, including ``None``."""
+
+        return self.default is not _NO_VAR_DEFAULT
 
     def __post_init__(self) -> None:
         if not is_ztype(self.type):
@@ -169,7 +183,7 @@ class Var:
                 f"Variable '{self.name}' has unsupported coordination type "
                 f"{self.type!r}."
             )
-        if self.default is not None:
+        if self.has_default:
             validate_zvalue(
                 self.default,
                 self.type,
@@ -177,7 +191,9 @@ class Var:
             )
 
     def __hash__(self) -> int:
-        if self.type is Json:
+        if not self.has_default:
+            default_key = _NO_VAR_DEFAULT
+        elif self.type is Json:
             default_key = json.dumps(
                 self.default,
                 sort_keys=True,
@@ -190,7 +206,7 @@ class Var:
 
     def __repr__(self) -> str:
         t = self.type.__name__
-        if self.default is not None:
+        if self.has_default:
             return f"Var({self.name!r}: {t} = {self.default!r})"
         return f"Var({self.name!r}: {t})"
 
@@ -1079,80 +1095,84 @@ def _participation_set(
             raise TypeError(f"Unknown statement type: {type(stmt).__name__}")
 
 
-def occurring_variables(stmt: AnyStmt) -> frozenset[str]:
-    """Compute the names of every variable occurring in a statement.
+def occurring_variable_declarations(stmt: AnyStmt) -> frozenset[Var]:
+    """Compute every variable declaration occurring in a statement.
 
-    V(e)                        = names bound or read anywhere in the program
-
-    Projection introduces receive-guard variables, and the paper requires each
-    to be fresh -- not occurring in P. Freshness is therefore a property of the
-    whole program, so the occupied names have to be collected before any name
-    is generated. Without this, a generated ``_ctrl1`` silently overwrites a
-    user variable of the same name and the receiver branches on the wrong
-    value, with no error anywhere.
-
-    Conditions are Python callables and cannot be inspected, but a variable a
-    condition reads must have been bound by an action output or a message
-    binding to hold a value at all -- so it is already counted here.
+    This is the one exhaustive walk used by freshness and availability. Keeping
+    the ``Var`` objects, rather than only their names, also preserves explicit
+    defaults for variables declared inside a workflow body.
     """
 
-    def _names(exprs) -> frozenset[str]:
-        found: set[str] = set()
+    def _variables(exprs) -> frozenset[Var]:
+        found: set[Var] = set()
         for expr in exprs:
             if isinstance(expr, VarExpr):
-                found.add(expr.var.name)
+                found.add(expr.var)
             elif isinstance(expr, Var):
-                found.add(expr.name)
+                found.add(expr)
         return frozenset(found)
 
     match stmt:
         case EmptyStmt() | SkipStmt():
             return frozenset()
         case MsgStmt(payload=payload, bindings=bindings):
-            return _names(payload) | _names(bindings)
+            return _variables(payload) | _variables(bindings)
         case CoregionStmt(messages=messages):
-            gathered: frozenset[str] = frozenset()
+            gathered: frozenset[Var] = frozenset()
             for msg in messages:
-                gathered |= occurring_variables(msg)
+                gathered |= occurring_variable_declarations(msg)
             return gathered
         case ActStmt(inputs=inputs, outputs=outputs):
-            return _names(inputs) | _names(outputs)
+            return _variables(inputs) | _variables(outputs)
         case SeqStmt(first=p1, second=p2):
-            return occurring_variables(p1) | occurring_variables(p2)
+            return occurring_variable_declarations(p1) | occurring_variable_declarations(p2)
         case IfStmt(branch_true=p1, branch_false=p2):
-            return occurring_variables(p1) | occurring_variables(p2)
+            return occurring_variable_declarations(p1) | occurring_variable_declarations(p2)
         case WhileStmt(body=p, exit_body=q):
-            return occurring_variables(p) | occurring_variables(q)
+            return occurring_variable_declarations(p) | occurring_variable_declarations(q)
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
-            in_branches: frozenset[str] = frozenset()
+            in_branches: frozenset[Var] = frozenset()
             for branch in branches:
-                in_branches |= occurring_variables(branch)
+                in_branches |= occurring_variable_declarations(branch)
             return in_branches
         case SendStmt(payload=payload):
-            return _names(payload)
+            return _variables(payload)
         case RecvStmt(bindings=bindings):
-            return _names(bindings)
+            return _variables(bindings)
         case ReceiveAnyStmt(receives=receives):
-            from_any: frozenset[str] = frozenset()
+            from_any: frozenset[Var] = frozenset()
             for _sender, bindings in receives:
-                from_any |= _names(bindings)
+                from_any |= _variables(bindings)
             return from_any
         case SelfAssignStmt(payload=payload, bindings=bindings):
-            return _names(payload) | _names(bindings)
+            return _variables(payload) | _variables(bindings)
         case IfRecvStmt(bindings=bindings, branch_true=p1, branch_false=p2):
             return (
-                _names(bindings)
-                | occurring_variables(p1)
-                | occurring_variables(p2)
+                _variables(bindings)
+                | occurring_variable_declarations(p1)
+                | occurring_variable_declarations(p2)
             )
         case WhileRecvStmt(bindings=bindings, body=p, exit_body=q):
             return (
-                _names(bindings)
-                | occurring_variables(p)
-                | occurring_variables(q)
+                _variables(bindings)
+                | occurring_variable_declarations(p)
+                | occurring_variable_declarations(q)
             )
         case _:
             raise TypeError(f"Unknown statement type: {type(stmt).__name__}")
+
+
+def occurring_variables(stmt: AnyStmt) -> frozenset[str]:
+    """Compute the names of every variable bound or read in a statement.
+
+    Projection introduces receive-guard variables, and the paper requires each
+    to be fresh -- not occurring in P. Freshness is therefore a whole-program
+    property established from the shared declaration walk above.
+    """
+
+    return frozenset(
+        variable.name for variable in occurring_variable_declarations(stmt)
+    )
 
 
 # ---------------------------------------------------------------------------
