@@ -180,6 +180,10 @@ def test_live_agent_view_marks_the_stable_local_statement_path():
     assert code.startswith(
         "# Live local projection for Editor; read-only observation."
     )
+    assert (
+        "# ▶ marks the current uncommitted step (where execution will resume)."
+        in code
+    )
 
     watched = render_local_projection_with_pointers(
         editorial,

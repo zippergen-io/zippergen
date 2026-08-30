@@ -4839,7 +4839,7 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
 
     inspect_parser = subparsers.add_parser(
         "inspect",
-        help="show the last committed durable program position",
+        help="show where durable execution will resume",
     )
     inspect_parser.set_defaults(execution_owner=owner)
     inspect_parser.add_argument(

@@ -690,9 +690,9 @@ def render_local_projection_with_pointers(
     lines = [
         f"# Live local projection for {lifeline.name}; read-only observation.",
         (
-            "# ▶ marks a last committed durable program position."
+            "# ▶ marks the current uncommitted step (where execution will resume)."
             if active
-            else "# No durable program position is currently marked."
+            else "# No durable step is currently marked."
         ),
         "",
         f"  @role({lifeline.name!r})",
