@@ -97,16 +97,9 @@ claude  # or: codex
 
 Then ask:
 
-> Build a ZipperGen workflow that watches a mailbox directory, asks an LLM to
-> draft a short reply to each new message, and asks me to approve it before it
-> is sent. It should keep running and wait for the next message.
->
-> Use plain `.txt` files directly inside `mailbox/`. A file containing only
-> `Can we meet on Thursday` is a complete message. Do not require `From` or
-> `Subject` headers, and do not add an `inbox/` subdirectory. Use `mailbox/` as
-> the local default rather than a required workflow input. The exact command
-> `zg run --llm mock` must reach the approval without asking a setup question.
-> Before reporting success, test that exact file, layout, and command.
+> Build a ZipperGen workflow that watches plain `.txt` files in `mailbox/`,
+> asks an LLM to draft a reply, and asks me to approve it before sending. It
+> should keep waiting for new messages.
 
 The agent follows the instructions from `zippergen skill`, writes
 `specification.md` and `workflow.py`, and validates the result. The workflow
@@ -153,6 +146,8 @@ OK   workflow inputs: none, the run starts without setup questions
 ```
 
 ```
+No real model is in use: every participant answers with the mock. Assign one with 'zg model assign TARGET NAME'.
+
 REQUEST · Mailbox
 
 Proposed reply:
@@ -355,8 +350,8 @@ zg run inspect --watch --agent Writer
 Ctrl-C closes the view without interrupting the workflow. Use
 `zg deploy inspect --watch` for a deployment.
 
-`zg deploy` builds an immutable release, checks its models and connectors, and
-starts the service:
+`zg deploy` builds an immutable release, checks its models and connectors,
+installs it as a supervised systemd or launchd user service, and starts it:
 
 ```bash
 zg deploy
