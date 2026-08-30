@@ -235,26 +235,35 @@ program. It cannot wait for it, and it cannot block on it. This is what projecti
 
 ## One configuration pattern
 
-Provider connections, models, coding assistants, and connectors use one small
-grammar:
+Provider connections, models, coding assistants, and connectors follow the
+same configuration pattern:
 
 ```text
-zg provider configure NAME KIND
-zg TYPE configure NAME ...
-zg TYPE assign TARGET NAME
-zg TYPE check [NAME]
-zg TYPE remove NAME
+zg provider configure NAME PROVIDER_KIND
+zg model configure NAME CONNECTION MODEL
+zg assistant configure NAME BACKEND
+zg connector configure NAME CONNECTION [CONNECTOR_KIND]
+
+zg model assign TARGET NAME
+zg assistant assign TARGET NAME
+zg connector assign TARGET NAME
+
+zg FAMILY check [NAME]
+zg FAMILY remove NAME
 ```
 
-A connector for an external service uses `bind REQUIREMENT NAME` instead of
-`assign`. A provider connection is the named access path to one external
-provider: it owns the private credential and any machine-specific endpoint.
-A model configuration then chooses a model through one connection; a connector
-configuration chooses a chat, mailbox, spreadsheet, or other destination
-through one connection. In the examples below, `approval-bot` is a Telegram
-provider connection and `approval-chat` is a connector configuration using it.
-`zg model`, `zg assistant`, `zg provider`, `zg connector`, and `zg config` show
-the result.
+`FAMILY` is `provider`, `model`, `assistant`, or `connector`. Square brackets
+mark a genuinely optional value: the connector kind is inferred when the
+selected connection supports only one. `connector assign` accepts either a
+service requirement or a human-action target; the workflow determines which
+kind the target is. A provider connection is the named access path to one
+external provider: it owns the private credential and any machine-specific
+endpoint. A model configuration then chooses a model through one connection;
+a connector configuration chooses a chat, mailbox, spreadsheet, or other
+destination through one connection. In the examples below, `approval-bot` is a
+Telegram provider connection and `approval-chat` is a connector configuration
+using it. `zg model`, `zg assistant`, `zg provider`, `zg connector`, and
+`zg config` show the result.
 
 When you work in a terminal, you may leave out required values. ZipperGen asks
 for them and shows available targets and saved configurations. For example,
