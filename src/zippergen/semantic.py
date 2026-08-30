@@ -16,7 +16,6 @@ from zippergen.syntax import (
     ActStmt,
     AssistantAction,
     AnyStmt,
-    CoregionStmt,
     EffectAction,
     EmptyStmt,
     HumanAction,
@@ -227,11 +226,6 @@ def workflow_semantics(
                 "node": "message",
                 **{key: value for key, value in record.items() if key != "code"},
             }
-        if isinstance(stmt, CoregionStmt):
-            marker = f"coregion[{len(stmt.messages)}]"
-            regions.append({"kind": "coregion", "size": len(stmt.messages), "context": list(context)})
-            nodes = [walk(message, (*context, marker)) for message in stmt.messages]
-            return {"node": "coregion", "messages": canonical_unordered(nodes)}
         if isinstance(stmt, ActStmt):
             definition = _action_definition(stmt.action)
             key = str(definition["name"])

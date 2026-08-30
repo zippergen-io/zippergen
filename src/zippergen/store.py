@@ -1211,7 +1211,7 @@ class DurableChannel:
     the message is still outstanding and nothing was lost.
 
     ``id`` is the only ordering fact kept. It gives FIFO per route and a
-    deterministic winner for a coregion receive across routes.
+    deterministic winner for a receive across routes.
     """
 
     def __init__(self, conn: sqlite3.Connection, role: str) -> None:

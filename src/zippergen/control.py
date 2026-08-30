@@ -8,7 +8,6 @@ three shapes fresh, and each gets one constructor here:
     done                     nothing left to run
     at   [path]              run the static node at this path
     seq  a b                 run a, then b
-    any  [path] [senders]    a coregion receive with some senders still pending
     par  [branches] [labels] a local parallel region, one control per branch
 
 That is the whole control language. It is closed under one interpreter step,
@@ -35,14 +34,12 @@ from zippergen.syntax import (
     LitExpr,
     LocalStmt,
     ParallelLocalStmt,
-    ReceiveAnyStmt,
     SeqStmt,
     VarExpr,
 )
 
 __all__ = [
     "ControlError",
-    "PartialReceiveAny",
     "Residual",
     "decode_control",
     "encode_control",
@@ -55,41 +52,9 @@ class ControlError(Exception):
     """Durable control state does not fit the program it was decoded against."""
 
 
-@dataclass(frozen=True)
-class PartialReceiveAny:
-    """A coregion receive that has taken some of its messages already.
-
-    The interpreter cannot simply shrink the static ``ReceiveAnyStmt``, because
-    then the residual would no longer be nameable by a path. Instead it keeps a
-    reference to the static node and the set of senders still outstanding, so
-    the control state stays exactly representable.
-    """
-
-    origin: ReceiveAnyStmt
-    remaining: tuple[str, ...]
-
-    @property
-    def receives(self) -> tuple:
-        pending = set(self.remaining)
-        return tuple(
-            (sender, bindings)
-            for sender, bindings in self.origin.receives
-            if sender.name in pending
-        )
-
-    @property
-    def lifeline(self):
-        return self.origin.lifeline
-
-    @property
-    def channel(self) -> str:
-        return self.origin.channel
-
-
-# Projection produces ``LocalStmt``. The interpreter additionally creates a
-# partial coregion receive while it consumes that static node one sender at a
-# time. This is the complete residual language held in memory.
-Residual: TypeAlias = LocalStmt | PartialReceiveAny
+# Projection produces ``LocalStmt``, and the interpreter creates nothing
+# outside it. This is the complete residual language held in memory.
+Residual: TypeAlias = LocalStmt
 
 
 def encode_control(root: LocalStmt, residual: Residual) -> dict:
@@ -103,17 +68,6 @@ def encode_control(root: LocalStmt, residual: Residual) -> dict:
         path = paths.get(id(node))
         if path is not None:
             return {"k": "at", "p": list(path)}
-        if isinstance(node, PartialReceiveAny):
-            origin_path = paths.get(id(node.origin))
-            if origin_path is None:
-                raise ControlError(
-                    "a coregion receive in progress is not part of this program"
-                )
-            return {
-                "k": "any",
-                "p": list(origin_path),
-                "s": list(node.remaining),
-            }
         if isinstance(node, SeqStmt):
             return {
                 "k": "seq",
@@ -150,19 +104,6 @@ def decode_control(root: LocalStmt, data: dict) -> Residual:
                     f"control path {node.get('p')!r} does not exist in this program"
                 )
             return target
-        if kind == "any":
-            origin = resolve_path(root, list(node.get("p") or []))
-            if not isinstance(origin, ReceiveAnyStmt):
-                raise ControlError(
-                    f"control path {node.get('p')!r} is not a coregion receive"
-                )
-            remaining = tuple(str(name) for name in node.get("s") or ())
-            known = {sender.name for sender, _bindings in origin.receives}
-            if not remaining or not set(remaining) <= known:
-                raise ControlError(
-                    "pending coregion senders do not belong to this receive"
-                )
-            return PartialReceiveAny(origin, remaining)
         if kind == "seq":
             return SeqStmt(
                 cast(AnyStmt, decode(node.get("a"))),
@@ -198,9 +139,6 @@ def frontier_paths(root: LocalStmt, residual: Residual) -> list[list[int]]:
             for branch in node.branches:
                 out.extend(walk(branch))
             return out
-        if isinstance(node, PartialReceiveAny):
-            path = paths.get(id(node.origin))
-            return [list(path)] if path is not None else []
         path = paths.get(id(node))
         return [list(path)] if path is not None else []
 

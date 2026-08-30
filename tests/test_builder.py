@@ -7,7 +7,7 @@ from a given DSL pattern.
 import pytest
 
 from zippergen.syntax import (
-    EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
+    EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt,
     SendStmt, RecvStmt,
     Json, Lifeline, Var, VarExpr, LitExpr,
@@ -186,20 +186,6 @@ def test_parallel_builder_records_parallel_stmt():
 # ---------------------------------------------------------------------------
 # DSL syntax → IR: co-region
 # ---------------------------------------------------------------------------
-
-@workflow
-def coregion_send(a: int @ P, b: int @ Q) -> tuple:
-    with coregion:
-        P(a) >> R(a)
-        Q(b) >> R(b)
-    return (a @ R, b @ R)
-
-
-def test_coregion_block_produces_coregion_stmt():
-    assert isinstance(coregion_send.body, CoregionStmt)
-    assert len(coregion_send.body.messages) == 2
-    assert {msg.sender for msg in coregion_send.body.messages} == {P, Q}
-    assert {msg.receiver for msg in coregion_send.body.messages} == {R}
 
 
 # ---------------------------------------------------------------------------

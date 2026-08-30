@@ -390,29 +390,6 @@ def test_messages_on_one_route_stay_in_order(tmp_path):
         conn.close()
 
 
-def test_a_coregion_receive_takes_the_earliest_send_across_routes(tmp_path):
-    store = str(tmp_path / "run.sqlite")
-    conn = open_store(store)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        for sender, value in (("C", 30), ("A", 10), ("B", 20)):
-            conn.execute(
-                "INSERT INTO outstanding_messages(sender,receiver,channel,payload) "
-                "VALUES(?,'R','main',?)",
-                    (sender, dumps_value((value,))),
-            )
-        conn.execute("COMMIT")
-        from zippergen.store import DurableChannel
-
-        channel = DurableChannel(conn, "R")
-        order = [
-            channel.try_get_any("R", {"A", "B", "C"}, "main")[0] for _ in range(3)
-        ]
-        assert order == ["C", "A", "B"], "send order decides, not sender name"
-    finally:
-        conn.close()
-
-
 def test_a_send_and_the_senders_advance_commit_together(tmp_path):
     """Either both or neither. This is what makes 'never duplicated' true.
 

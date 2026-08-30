@@ -25,7 +25,6 @@ from zippergen.projection import project
 from zippergen.syntax import (
     ActStmt,
     AnyStmt,
-    CoregionStmt,
     AssistantAction,
     EffectAction,
     EmptyStmt,
@@ -41,7 +40,6 @@ from zippergen.syntax import (
     ParallelStmt,
     PlannerAction,
     PureAction,
-    ReceiveAnyStmt,
     RecvStmt,
     SelfAssignStmt,
     SendStmt,
@@ -135,8 +133,6 @@ def _actions(stmt: AnyStmt) -> list[object]:
         if isinstance(node, SeqStmt):
             visit(node.first)
             visit(node.second)
-        elif isinstance(node, CoregionStmt):
-            return
         elif isinstance(node, IfStmt):
             visit(node.branch_true)
             visit(node.branch_false)
@@ -361,8 +357,6 @@ class _GlobalRenderer:
             if self.communications_only and stmt.sender == stmt.receiver:
                 return False
             return self.selected is None or self._selected(stmt.sender) or self._selected(stmt.receiver)
-        if isinstance(stmt, CoregionStmt):
-            return any(self._relevant(message) for message in stmt.messages)
         if isinstance(stmt, ActStmt):
             return not self.communications_only and self._selected(stmt.lifeline)
         if isinstance(stmt, SkipStmt):
@@ -390,12 +384,6 @@ class _GlobalRenderer:
             left = self._endpoint(stmt.sender, _exprs(stmt.payload))
             right = self._endpoint(stmt.receiver, _exprs(stmt.bindings))
             return [f"{pad}{left} >> {right}"]
-        if isinstance(stmt, CoregionStmt):
-            messages = [message for message in stmt.messages if self._relevant(message)]
-            lines = [f"{pad}with coregion:"]
-            for message in messages:
-                lines.extend(self.render(message, indent + 1))
-            return lines
         if isinstance(stmt, ActStmt):
             outputs = ", ".join(value.name for value in stmt.outputs)
             if len(stmt.outputs) != 1:
@@ -504,16 +492,6 @@ class _LocalRenderer:
                     path,
                     f"{pad}{prefix}recv({stmt.sender.name!r}"
                     f"{_channel_suffix(stmt.channel)})",
-                )
-            ]
-        if isinstance(stmt, ReceiveAnyStmt):
-            options = ", ".join(
-                f"{sender.name!r}: ({_exprs(bindings)})" for sender, bindings in stmt.receives
-            )
-            return [
-                (
-                    path,
-                    f"{pad}recv_any({{{options}}}{_channel_suffix(stmt.channel)})",
                 )
             ]
         if isinstance(stmt, SelfAssignStmt):
@@ -635,9 +613,6 @@ def describe_local_statement(stmt: object) -> str:
         return f"send to {stmt.receiver.name}"
     if isinstance(stmt, RecvStmt):
         return f"receive from {stmt.sender.name}"
-    if isinstance(stmt, ReceiveAnyStmt):
-        senders = " or ".join(sender.name for sender, _ in stmt.receives)
-        return f"receive from {senders}"
     if isinstance(stmt, SelfAssignStmt):
         return "local assignment"
     if isinstance(stmt, ActStmt):

@@ -352,26 +352,6 @@ def test_causal_metadata_round_trips_on_an_outstanding_message(tmp_path):
         conn.close()
 
 
-def test_a_coregion_receive_prefers_the_earliest_send(tmp_path):
-    conn = open_store(str(tmp_path / "s.sqlite"))
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        DurableChannel(conn, "C").put("C", "R", "main", ("third",))
-        DurableChannel(conn, "A").put("A", "R", "main", ("first",))
-        conn.execute("COMMIT")
-
-        receiver = DurableChannel(conn, "R")
-        conn.execute("BEGIN IMMEDIATE")
-        sender, item = receiver.try_get_any("R", {"A", "C"}, "main")
-        conn.execute("ROLLBACK")
-        receiver.clear_taken()
-
-        assert sender == "C", "send order wins, not sender name"
-        assert item[1] == ("third",)
-    finally:
-        conn.close()
-
-
 # ---------------------------------------------------------------------------
 # History: optional
 # ---------------------------------------------------------------------------

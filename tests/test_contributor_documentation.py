@@ -39,9 +39,8 @@ def test_the_guide_states_what_each_theorem_covers() -> None:
     """The over-claim this document exists to prevent."""
 
     text = GUIDE.read_text()
-    assert "CoregionStmt" in text
-    assert "future work" in text
     assert "ISoLA" in text and "EXPRESS/SOS" in text
+    assert "Every construct the DSL offers is covered" in text
 
 
 def test_the_guide_states_the_module_boundary() -> None:

@@ -617,10 +617,9 @@ global workflow. Freedom from deadlock follows from this, for well-formed
 workflows in the supported model.
 
 The proved constructs are message, action, skip, sequence, `if`, and `while`
-(ISoLA paper), plus the parallel operator (EXPRESS/SOS paper). `with coregion:`
-is implemented and tested but is **not** covered by a published result yet --
-the ISoLA paper lists coregions as future work. Use it where a relaxed
-reception order is what you want; do not rely on it for the guarantee above.
+(ISoLA paper), plus the parallel operator (EXPRESS/SOS paper). That is the
+whole language: every construct ZipperGen offers is covered by a published
+result, so the guarantee above has no exceptions to remember.
 
 The core projection theorems are
 [machine-checked in Lean 4](https://github.com/zippergen-io/zippergen-lean/tree/main/isola).

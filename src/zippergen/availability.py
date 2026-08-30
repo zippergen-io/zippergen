@@ -13,7 +13,6 @@ from dataclasses import dataclass
 
 from zippergen.syntax import (
     ActStmt,
-    CoregionStmt,
     EmptyStmt,
     IfStmt,
     LitExpr,
@@ -172,23 +171,6 @@ def _check_statement(
             for name in _variable_names(payload):
                 state.require(sender.name, name, f"message from {sender.name!r}")
             state.bind(receiver.name, _variable_names(bindings))
-
-        case CoregionStmt(messages=messages):
-            # Every send is enabled from the state before the unordered region;
-            # all receive bindings exist once the region completes.
-            received: list[tuple[str, tuple[str, ...]]] = []
-            for message in messages:
-                for name in _variable_names(message.payload):
-                    state.require(
-                        message.sender.name,
-                        name,
-                        f"coregion message from {message.sender.name!r}",
-                    )
-                received.append(
-                    (message.receiver.name, _variable_names(message.bindings))
-                )
-            for receiver, names in received:
-                state.bind(receiver, names)
 
         case ActStmt(lifeline=lifeline, action=action, inputs=inputs, outputs=outputs):
             for name in _variable_names(inputs):

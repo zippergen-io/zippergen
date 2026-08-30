@@ -30,7 +30,7 @@ from zippergen.llm_policy import (
 from zippergen.syntax import (
     is_control_value,
     is_kappa_ctrl,
-    EmptyStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
+    EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     ParallelStmt, ParallelLocalStmt,
     VarExpr, LitExpr, Var, Json,
@@ -41,7 +41,7 @@ from zippergen.syntax import (
     seq,
     validate_zvalue,
 )
-from zippergen.control import PartialReceiveAny, Residual
+from zippergen.control import Residual
 from zippergen.projection import project
 from zippergen.formula import Formula as _Formula, subformulas as _subformulas
 from zippergen.monitor import MonitorState
@@ -716,37 +716,6 @@ def _step(
                 })
             return EmptyStmt(), True
 
-        case ReceiveAnyStmt() | PartialReceiveAny():
-            origin = stmt.origin if isinstance(stmt, PartialReceiveAny) else stmt
-            A = stmt.lifeline
-            channel = stmt.channel
-            receives = stmt.receives
-            pending = {sender.name: (sender, ys) for sender, ys in receives}
-            selected = _try_channel_get_any(ch, A.name, set(pending), channel)
-            if selected is None:
-                return stmt, False
-            sender_name, item = selected
-            sender, ys = pending[sender_name]
-            seq_no, values, recv_vc, recv_view, recv_field_view = item
-            _bind(ys, values, env)
-            if monitor:
-                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
-            if trace:
-                trace({
-                    "type": "recv",
-                    "to": A.name, "from": sender.name,
-                    "channel": channel,
-                    "bindings": _bound_dict(ys, values),
-                    "seq": seq_no,
-                    **_recv_trace_fields(monitor, recv_vc),
-                })
-            # Keep pointing at the static node so the control state stays exactly
-            # representable; only the outstanding sender set shrinks.
-            remaining = tuple(name for name in pending if name != sender_name)
-            if not remaining:
-                return EmptyStmt(), True
-            return PartialReceiveAny(origin, remaining), True
-
         case SeqStmt(first=p1, second=p2):
             first = cast(Residual, p1)
             second = cast(Residual, p2)
@@ -981,28 +950,6 @@ def _exec(
                     "seq": seq,
                     **_recv_trace_fields(monitor, recv_vc),
                 })
-
-        case ReceiveAnyStmt(lifeline=A, receives=receives, channel=channel):
-            pending = {
-                sender.name: (sender, bindings)
-                for sender, bindings in receives
-            }
-            while pending:
-                sender_name, item = _receive_any(ch, A.name, set(pending), channel, stop=stop)
-                seq, values, recv_vc, recv_view, recv_field_view = item
-                sender, ys = pending.pop(sender_name)
-                _bind(ys, values, env)
-                if monitor:
-                    monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
-                if trace:
-                    trace({
-                        "type": "recv",
-                        "to": A.name, "from": sender.name,
-                        "channel": channel,
-                        "bindings": _bound_dict(ys, values),
-                        "seq": seq,
-                        **_recv_trace_fields(monitor, recv_vc),
-                    })
 
         case SelfAssignStmt(lifeline=A, payload=xs, bindings=ys):
             values = tuple(_eval(x, env) for x in xs)

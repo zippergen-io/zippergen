@@ -58,7 +58,6 @@ control language is five constructors:
 | `{"k":"done"}` | nothing left to run |
 | `{"k":"at","p":[1,0]}` | run the static statement at this path |
 | `{"k":"seq","a":…,"b":…}` | run `a`, then `b` |
-| `{"k":"any","p":[…],"s":["B","C"]}` | a coregion receive with senders still pending |
 | `{"k":"par","b":[…],"i":[0,1]}` | a parallel region, one control per branch |
 
 It is closed under one interpreter step. That closure is the reason storing the
@@ -78,11 +77,6 @@ Inside `parallel` a lifeline has **one position per unfinished branch**, so a
 single locator is not enough. The `par` constructor holds one control per
 branch, and a finished branch is `done`. Join is implicit: the region is over
 when every branch is `done`.
-
-A coregion receive is the other shape that needed care. The interpreter cannot
-just shrink the static node, because the smaller node would have no path. It
-keeps a reference to the static node plus the set of senders still outstanding
-(`PartialReceiveAny`), so the position stays exactly representable.
 
 ## 3. The loop
 

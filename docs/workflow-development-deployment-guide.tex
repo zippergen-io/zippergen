@@ -412,14 +412,6 @@ with parallel:
         Security(security_status) >> Committer(security_status)
 \end{lstlisting}
 
-A co-region is weaker: messages that may arrive in any order.
-
-\begin{lstlisting}[language=Python]
-with coregion:
-    Analyst_A(a) >> Collector(a_report)
-    Analyst_B(b) >> Collector(b_report)
-\end{lstlisting}
-
 \subsection{Inputs and outputs}
 
 \begin{lstlisting}[language=Python]

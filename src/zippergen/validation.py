@@ -13,7 +13,6 @@ from zippergen.projection import project
 from zippergen.syntax import (
     ActStmt,
     AssistantAction,
-    CoregionStmt,
     EffectAction,
     IfStmt,
     ParallelStmt,
@@ -47,8 +46,6 @@ def workflow_action_sites(
         elif isinstance(stmt, ParallelStmt):
             for branch in stmt.branches:
                 visit(branch)
-        elif isinstance(stmt, CoregionStmt):
-            return
 
     visit(workflow.body)
     return tuple(found)

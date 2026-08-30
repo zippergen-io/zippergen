@@ -31,11 +31,11 @@ __all__ = [
     "ZTypeAtLifeline",
     # Statements
     "Stmt",
-    "EmptyStmt", "MsgStmt", "CoregionStmt", "ActStmt", "SkipStmt",
+    "EmptyStmt", "MsgStmt", "ActStmt", "SkipStmt",
     "SeqStmt", "IfStmt", "WhileStmt", "ParallelStmt",
     # Local-only statements (produced by projection)
     "LocalStmt", "AnyStmt",
-    "SendStmt", "RecvStmt", "ReceiveAnyStmt", "SelfAssignStmt", "IfRecvStmt", "WhileRecvStmt",
+    "SendStmt", "RecvStmt", "SelfAssignStmt", "IfRecvStmt", "WhileRecvStmt",
     "ParallelLocalStmt",
     # Workflow
     "Workflow",
@@ -329,8 +329,6 @@ def _canon_stmt(node: "AnyStmt") -> str:
             xstr = ",".join(_canon_expr(e) for e in xs)
             ystr = ",".join(_canon_expr(e) for e in ys)
             return f"msg({s.name},[{xstr}],{r.name},[{ystr}])"
-        case CoregionStmt(messages=messages):
-            return "coreg(" + ";".join(_canon_stmt(m) for m in messages) + ")"
         case ActStmt(lifeline=a, action=act, inputs=ins, outputs=outs):
             istr = ",".join(_canon_expr(e) for e in ins)
             ostr = ",".join(v.name for v in outs)
@@ -545,46 +543,6 @@ class MsgStmt:
 
 
 @dataclass(frozen=True)
-class CoregionStmt:
-    """Unordered block of messages with one receiver and distinct senders."""
-    messages: tuple[MsgStmt, ...]
-
-    def __post_init__(self) -> None:
-        if not self.messages:
-            raise ValueError("coregion requires at least one message")
-
-        receiver = self.messages[0].receiver
-        seen_senders: set[Lifeline] = set()
-        seen_bindings: dict[str, Lifeline] = {}
-
-        for msg in self.messages:
-            if msg.receiver != receiver:
-                raise ValueError("coregion messages must all have the same receiver")
-            if msg.sender == receiver:
-                raise ValueError("coregion messages must be between distinct lifelines")
-            if msg.sender in seen_senders:
-                raise ValueError(
-                    f"coregion requires distinct senders; {msg.sender.name} appears more than once"
-                )
-            seen_senders.add(msg.sender)
-
-            for binding in msg.bindings:
-                if not isinstance(binding, VarExpr):
-                    continue
-                name = binding.var.name
-                if name in seen_bindings:
-                    raise ValueError(
-                        f"coregion receive variables must be disjoint; variable {name} "
-                        "is assigned by multiple messages"
-                    )
-                seen_bindings[name] = msg.sender
-
-    def __repr__(self) -> str:
-        body = "; ".join(repr(msg) for msg in self.messages)
-        return f"coregion {{ {body} }}"
-
-
-@dataclass(frozen=True)
 class ActStmt:
     """act lifeline: outputs := action(inputs)"""
     lifeline: Lifeline
@@ -670,7 +628,7 @@ class ParallelStmt:
         return f"parallel {{ {body} }}"
 
 
-Stmt = Union[EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt, ParallelStmt]
+Stmt = Union[EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt, ParallelStmt]
 
 
 # ---------------------------------------------------------------------------
@@ -703,35 +661,6 @@ class RecvStmt:
         ys = ", ".join(repr(e) for e in self.bindings)
         suffix = "" if self.channel == "main" else f" [{self.channel}]"
         return f"recv {self.lifeline.name}({ys}) ← {self.sender.name}{suffix}"
-
-
-@dataclass(frozen=True)
-class ReceiveAnyStmt:
-    """recv-any A from one of several distinct senders."""
-    lifeline: Lifeline
-    receives: tuple[tuple[Lifeline, tuple[Expr, ...]], ...]
-    channel: str = "main"
-
-    def __post_init__(self) -> None:
-        if not self.receives:
-            raise ValueError("receive-any requires at least one sender")
-        seen: set[Lifeline] = set()
-        for sender, _bindings in self.receives:
-            if sender == self.lifeline:
-                raise ValueError("receive-any sender must differ from receiver")
-            if sender in seen:
-                raise ValueError(
-                    f"receive-any requires distinct senders; {sender.name} appears more than once"
-                )
-            seen.add(sender)
-
-    def __repr__(self) -> str:
-        options = ", ".join(
-            f"{sender.name}({', '.join(repr(e) for e in bindings)})"
-            for sender, bindings in self.receives
-        )
-        suffix = "" if self.channel == "main" else f" [{self.channel}]"
-        return f"recv_any {self.lifeline.name} ← {{{options}}}{suffix}"
 
 
 @dataclass(frozen=True)
@@ -822,7 +751,7 @@ class ParallelLocalStmt:
 
 
 LocalStmt = Union[
-    EmptyStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
+    EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelLocalStmt,
 ]
 
@@ -830,7 +759,7 @@ LocalStmt = Union[
 # Used for recursive child positions in shared nodes (SeqStmt, IfStmt, WhileStmt)
 # and for functions that operate on either kind of program.
 AnyStmt = Union[
-    EmptyStmt, MsgStmt, CoregionStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
+    EmptyStmt, MsgStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelStmt, ParallelLocalStmt,
 ]
 
@@ -1025,7 +954,6 @@ def participation_set(
 
     L(ε)                        = ∅
     L(msg A(x) → B(y))          = {A, B}
-    L(coregion {msg A_i → B})   = {A_i | i} ∪ {B}
     L(act A: y := f(x))         = {A}
     L(skip A)                   = {A}
     L(P1 ; P2)                  = L(P1) ∪ L(P2)
@@ -1058,12 +986,6 @@ def _participation_set(
             return frozenset()
         case MsgStmt(sender=a, receiver=b):
             return frozenset({a, b})
-        case CoregionStmt(messages=messages):
-            coregion_participants: set[Lifeline] = set()
-            for msg in messages:
-                coregion_participants.add(msg.sender)
-                coregion_participants.add(msg.receiver)
-            return frozenset(coregion_participants)
         case ActStmt(lifeline=a):
             return frozenset({a})
         case SkipStmt(lifeline=a):
@@ -1082,8 +1004,6 @@ def _participation_set(
         case SendStmt(lifeline=a):
             return frozenset({a})
         case RecvStmt(lifeline=a):
-            return frozenset({a})
-        case ReceiveAnyStmt(lifeline=a):
             return frozenset({a})
         case SelfAssignStmt(lifeline=a):
             return frozenset({a})
@@ -1117,11 +1037,6 @@ def occurring_variable_declarations(stmt: AnyStmt) -> frozenset[Var]:
             return frozenset()
         case MsgStmt(payload=payload, bindings=bindings):
             return _variables(payload) | _variables(bindings)
-        case CoregionStmt(messages=messages):
-            gathered: frozenset[Var] = frozenset()
-            for msg in messages:
-                gathered |= occurring_variable_declarations(msg)
-            return gathered
         case ActStmt(inputs=inputs, outputs=outputs):
             return _variables(inputs) | _variables(outputs)
         case SeqStmt(first=p1, second=p2):
@@ -1139,11 +1054,6 @@ def occurring_variable_declarations(stmt: AnyStmt) -> frozenset[Var]:
             return _variables(payload)
         case RecvStmt(bindings=bindings):
             return _variables(bindings)
-        case ReceiveAnyStmt(receives=receives):
-            from_any: frozenset[Var] = frozenset()
-            for _sender, bindings in receives:
-                from_any |= _variables(bindings)
-            return from_any
         case SelfAssignStmt(payload=payload, bindings=bindings):
             return _variables(payload) | _variables(bindings)
         case IfRecvStmt(bindings=bindings, branch_true=p1, branch_false=p2):
@@ -1192,10 +1102,6 @@ def pp(node: AnyStmt, indent: int = 0) -> str:
             x_str = ", ".join(repr(e) for e in xs)
             y_str = ", ".join(repr(e) for e in ys)
             return f"{pad}msg {s.name}({x_str}) → {r.name}({y_str})"
-        case CoregionStmt(messages=messages):
-            lines = [f"{pad}coregion:"]
-            lines.extend(pp(msg, indent + 1) for msg in messages)
-            return "\n".join(lines)
         case ActStmt(lifeline=a, action=act, inputs=ins, outputs=outs):
             i_str = ", ".join(repr(e) for e in ins)
             o_str = ", ".join(v.name for v in outs)
@@ -1226,13 +1132,6 @@ def pp(node: AnyStmt, indent: int = 0) -> str:
             y_str = ", ".join(repr(e) for e in ys)
             suffix = "" if node.channel == "main" else f" [{node.channel}]"
             return f"{pad}recv {a.name}({y_str}) ← {b.name}{suffix}"
-        case ReceiveAnyStmt(lifeline=a, receives=receives):
-            suffix = "" if node.channel == "main" else f" [{node.channel}]"
-            lines = [f"{pad}recv_any {a.name}{suffix}:"]
-            for sender, bindings in receives:
-                y_str = ", ".join(repr(e) for e in bindings)
-                lines.append(f"{pad}  from {sender.name}({y_str})")
-            return "\n".join(lines)
         case SelfAssignStmt(lifeline=a, payload=xs, bindings=ys):
             x_str = ", ".join(repr(e) for e in xs)
             y_str = ", ".join(repr(e) for e in ys)

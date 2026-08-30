@@ -167,20 +167,20 @@ version control, not generated code.
 ## Theoretical Foundation
 
 The paper is at `../paper-isola/paper/msc-agents.tex`. The implementation
-corresponds directly to the formal definitions there, with one exception noted
-below.
+corresponds directly to the formal definitions there.
 
 **What each result covers.** The ISoLA paper proves completeness, soundness,
 and deadlock-freeness for the grammar given below: message, action, skip,
 sequence, `if`, and `while`. The parallel operator is established separately in
 the EXPRESS/SOS paper and `ParallelStmt` implements that result.
 
-`CoregionStmt` is outside both. The ISoLA paper lists coregions as future work
-(`paper-isola/paper/msc-agents.tex`, "Future work"), and no published result
-covers them yet. The implementation projects and runs coregions, and the
-projection follows the same shape as the proved constructs, but that is a
-design decision rather than a theorem. Do not describe a coregion workflow as
-carrying the paper's guarantee.
+Every construct the DSL offers is covered by one of those two results. That is
+a property to preserve, not a coincidence: a construct with no published result
+puts an asterisk on the one claim this project makes. Coregions were
+implemented and then removed for exactly that reason -- the ISoLA paper lists
+them as future work, so they had to be described as not carrying the guarantee.
+Use `ParallelStmt` where a relaxed order is wanted. Do not add a construct to
+the grammar before a result covers it.
 
 ### Formal Grammar
 

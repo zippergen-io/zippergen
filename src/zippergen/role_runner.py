@@ -32,7 +32,6 @@ from typing import Any, cast
 
 from zippergen.errors import WorkflowCancelled
 from zippergen.control import (
-    PartialReceiveAny,
     decode_control,
     encode_control,
     frontier_paths,
@@ -72,7 +71,6 @@ from zippergen.syntax import (
     IfRecvStmt,
     LLMAction,
     PlannerAction,
-    ReceiveAnyStmt,
     RecvStmt,
     WhileRecvStmt,
 )
@@ -253,7 +251,7 @@ class RoleRunner:
             return "done", {}
         if not blocked:
             return "running", {}
-        receives = (RecvStmt, ReceiveAnyStmt, IfRecvStmt, WhileRecvStmt)
+        receives = (RecvStmt, IfRecvStmt, WhileRecvStmt)
         nodes = [
             node
             for path in paths

@@ -149,23 +149,6 @@ def test_pass_and_transform():
 # Co-region receive-any
 # ---------------------------------------------------------------------------
 
-@workflow
-def coregion_collect(a: int @ CoreA, b: int @ CoreB) -> tuple:
-    with CoreA:
-        a = slow_identity(a)
-    with coregion:
-        CoreA(a) >> CoreR(a)
-        CoreB(b) >> CoreR(b)
-    return (a @ CoreR, b @ CoreR)
-
-
-def test_coregion_receiver_accepts_messages_in_arrival_order():
-    events = []
-    result = run(coregion_collect, [CoreA, CoreB, CoreR], {"CoreA": {"a": 1}, "CoreB": {"b": 2}}, trace=events.append)
-    recv_events = [event for event in events if event["type"] == "recv" and event["to"] == "CoreR"]
-    assert result == (1, 2)
-    assert [event["from"] for event in recv_events] == ["CoreB", "CoreA"]
-
 
 # ---------------------------------------------------------------------------
 # Parallel regions

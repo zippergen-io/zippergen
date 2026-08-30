@@ -24,6 +24,18 @@ Highlights:
   is refused rather than rewritten. There are no migrations because there is
   no earlier released format.
 
+Removed before release:
+
+- `with coregion:` is gone, along with `CoregionStmt`, `ReceiveAnyStmt`, and
+  the `any` durable control state. It was the one construct outside the
+  published results -- the ISoLA paper lists coregions as future work -- so it
+  had to be documented as not carrying the deadlock-freedom guarantee. Every
+  remaining construct is covered by a proof.
+- Use `with parallel:` where a relaxed order is wanted. It is not identical:
+  a coregion accepted from several senders on one thread, while parallel runs
+  concurrent branches on separate channels. The outcome is the same; the
+  execution shape is heavier.
+
 Operational notes:
 
 - Durable store compatibility remains strict. An incompatible workflow change

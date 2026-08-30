@@ -24,7 +24,7 @@ from zippergen.projection import project
 from zippergen.role_runner import RoleRunner, _begin_immediate
 from zippergen.runtime import _input_hash
 from zippergen.serve import _trace_rows
-from zippergen.syntax import ReceiveAnyStmt, VarExpr
+from zippergen.syntax import VarExpr
 from tests.loop_fixture import counter_loop, A as LoopA, B as LoopB
 from tests.test_examples_regression import _two_role_branch_workflow, A, B
 import json
@@ -53,9 +53,6 @@ SQLiteCPLExecutor = Lifeline("SQLiteCPLExecutor")
 SQLiteFieldSource = Lifeline("SQLiteFieldSource")
 SQLiteFieldGate = Lifeline("SQLiteFieldGate")
 SQLiteFormulaLoopOwner = Lifeline("SQLiteFormulaLoopOwner")
-SQLiteAnyA = Lifeline("SQLiteAnyA")
-SQLiteAnyZ = Lifeline("SQLiteAnyZ")
-SQLiteAnyR = Lifeline("SQLiteAnyR")
 
 p_total = Var("p_total", int, default=0)
 p_m = Var("p_m", int, default=0)
@@ -452,48 +449,6 @@ def test_run_sqlite_parallel_matches_inprocess():
     assert run_sqlite(sqlite_parallel_sum, [PUser, POwner, PCompute], initial, timeout=10) == run(
         sqlite_parallel_sum, [PUser, POwner, PCompute], initial, timeout=10
     )
-
-
-def test_role_runner_receive_any_uses_sqlite_rowid_order(tmp_path):
-    path = str(tmp_path / "receive-any.sqlite")
-    conn = open_store(path)
-    z_sender = DurableChannel(conn, SQLiteAnyZ.name)
-    a_sender = DurableChannel(conn, SQLiteAnyA.name)
-    conn.execute("BEGIN IMMEDIATE")
-    z_rowid = z_sender.put(SQLiteAnyZ.name, SQLiteAnyR.name, "main", (9,))
-    conn.execute("COMMIT")
-    conn.execute("BEGIN IMMEDIATE")
-    a_rowid = a_sender.put(SQLiteAnyA.name, SQLiteAnyR.name, "main", (1,))
-    conn.execute("COMMIT")
-
-    local_stmt = ReceiveAnyStmt(
-        SQLiteAnyR,
-        (
-            (SQLiteAnyA, (VarExpr(sqlite_any_a),)),
-            (SQLiteAnyZ, (VarExpr(sqlite_any_z),)),
-        ),
-    )
-    events = []
-    runner = RoleRunner(
-        conn,
-        SQLiteAnyR.name,
-        local_stmt,
-        {},
-        {"sqlite_any_a": sqlite_any_a, "sqlite_any_z": sqlite_any_z},
-        trace=events.append,
-    )
-
-    env = runner.run()
-    recv_events = [
-        event
-        for event in events
-        if event["type"] == "recv" and event["to"] == SQLiteAnyR.name
-    ]
-
-    assert z_rowid < a_rowid
-    assert [event["from"] for event in recv_events] == [SQLiteAnyZ.name, SQLiteAnyA.name]
-    assert env["sqlite_any_z"] == 9
-    assert env["sqlite_any_a"] == 1
 
 
 def test_run_sqlite_persists_final_result(tmp_path):
