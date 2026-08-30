@@ -420,8 +420,8 @@ zg
 `zg --help` renders this tree from the real command parser, so it cannot drift
 from the implementation. Run `zg <command> --help` for arguments and examples.
 
-Commands for durable state begin with its owner. Use `zg run tasks` for a
-durable run and `zg deploy tasks` for a deployment. The
+Commands for durable state begin with its owner. To list human tasks, run
+`zg run tasks` for a durable run or `zg deploy tasks` for a deployment. The
 [development and deployment guide](https://github.com/zippergen-io/zippergen/blob/main/docs/workflow-development-deployment-guide.pdf)
 documents reset, removal, compaction, and recovery.
 
@@ -455,9 +455,11 @@ configurations, participants, actions, and connector requirements.
 
 ## Formal foundation
 
-The main result says that the projected local programs behave exactly like the
-global workflow. Freedom from deadlock follows from this, for well-formed
-workflows in the supported model.
+The formal results establish two properties for well-formed workflows in the
+supported model. Complete executions of the projected local programs match
+executions of the global workflow, up to generated control messages. Every
+finite projected execution can also be extended to a complete one. The second
+property is the paper's precise sense of freedom from deadlock.
 
 The proved constructs are message, action, skip, sequence, `if`, and `while`
 (ISoLA paper), plus the parallel operator (EXPRESS/SOS paper). These constructs
