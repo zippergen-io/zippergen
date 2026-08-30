@@ -2927,6 +2927,17 @@ def test_trace_command_outputs_json_after_rowid(tmp_path, monkeypatch, capsys):
     ]
 
 
+#: The interval the follow tests pass to ``deploy trace --follow``.
+#:
+#: ``zippergen.serve.time`` is the shared ``time`` module, so patching its
+#: ``sleep`` replaces it for every module.  SQLite's lock retry sleeps too, and
+#: these scenarios write to the store while the follow loop reads it.  A poll
+#: hook that counts every sleep therefore lets a contended store advance the
+#: scenario before the first snapshot is taken.  Match on this interval so only
+#: the follow loop's own wait advances it.
+_FOLLOW_POLL_INTERVAL = 0.01
+
+
 def test_trace_command_follows_newly_committed_events(
     tmp_path,
     monkeypatch,
@@ -2943,7 +2954,9 @@ def test_trace_command_follows_newly_committed_events(
 
     polls = 0
 
-    def advance(_interval):
+    def advance(interval):
+        if interval != _FOLLOW_POLL_INTERVAL:
+            return
         nonlocal polls
         polls += 1
         if polls == 1:
@@ -2969,7 +2982,7 @@ def test_trace_command_follows_newly_committed_events(
         "1",
         "--follow",
         "--interval",
-        "0.01",
+        str(_FOLLOW_POLL_INTERVAL),
         "--json",
     ]) == 0
 
@@ -2991,7 +3004,9 @@ def test_trace_follow_prints_the_table_banner_only_once(
     store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
     polls = 0
 
-    def advance(_interval):
+    def advance(interval):
+        if interval != _FOLLOW_POLL_INTERVAL:
+            return
         nonlocal polls
         polls += 1
         if polls == 1:
@@ -3014,7 +3029,7 @@ def test_trace_follow_prints_the_table_banner_only_once(
         "trace",
         "--follow",
         "--interval",
-        "0.01",
+        str(_FOLLOW_POLL_INTERVAL),
     ]) == 0
 
     output = capsys.readouterr().out
@@ -3031,7 +3046,9 @@ def test_trace_follow_does_not_call_a_fresh_action_start_incomplete(
     store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
     polls = 0
 
-    def advance(_interval):
+    def advance(interval):
+        if interval != _FOLLOW_POLL_INTERVAL:
+            return
         nonlocal polls
         polls += 1
         writer = open_store(str(store_path))
@@ -3078,7 +3095,7 @@ def test_trace_follow_does_not_call_a_fresh_action_start_incomplete(
         "trace",
         "--follow",
         "--interval",
-        "0.01",
+        str(_FOLLOW_POLL_INTERVAL),
     ]) == 0
 
     output = capsys.readouterr().out
