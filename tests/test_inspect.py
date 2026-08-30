@@ -79,6 +79,8 @@ def test_inspect_shows_the_current_local_program_pointer(
 
     output = capsys.readouterr().out
     assert "Execution positions" in output
+    assert "Current uncommitted step" in output
+    assert "Last committed position" not in output
     assert "Writer" in output
     assert "running model action" in output
     assert "▶" in output

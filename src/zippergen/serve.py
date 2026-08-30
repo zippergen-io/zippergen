@@ -4465,7 +4465,7 @@ def _render_inspection(
             "Focus",
             "Participant",
             "State",
-            "Last committed position",
+            "Current uncommitted step",
             "Elapsed",
         ),
         [
