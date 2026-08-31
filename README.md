@@ -231,6 +231,9 @@ deployment. For step-by-step instructions, use these guides:
 
 ## Configuration
 
+A connector links a workflow to an external service or human channel, such as
+a Telegram chat, Gmail mailbox, or Google Sheet.
+
 Provider connections, models, coding assistants, and connectors follow the
 same configuration pattern:
 
