@@ -160,11 +160,11 @@ def _documented(command: tuple[str, ...], text: str) -> bool:
     if " ".join(command) in text:
         return True
     # The four configuration families share one documented pattern rather than
-    # repeating every verb four times, e.g. "TYPE rename OLD NEW".
+    # repeating every verb four times, e.g. "FAMILY rename OLD NEW".
     return (
         len(command) == 2
         and command[0] in FAMILIES
-        and f"TYPE {command[1]}" in text
+        and f"FAMILY {command[1]}" in text
     )
 
 
