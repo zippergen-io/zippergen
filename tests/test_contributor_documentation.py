@@ -13,6 +13,7 @@ import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 GUIDE = REPO / "docs" / "architecture.md"
+CONTRIBUTING = REPO / "CONTRIBUTING.md"
 
 
 def _is_tracked(path: pathlib.Path) -> bool:
@@ -32,6 +33,17 @@ def test_the_architecture_guide_ships() -> None:
     assert _is_tracked(GUIDE), (
         "docs/architecture.md is not tracked, so a fresh clone would not "
         "receive the module boundaries or the theorem scope"
+    )
+
+
+@pytest.mark.skipif(
+    not (REPO / ".git").exists(), reason="not a git checkout"
+)
+def test_the_contributor_guide_is_tracked() -> None:
+    assert CONTRIBUTING.is_file()
+    assert _is_tracked(CONTRIBUTING), (
+        "CONTRIBUTING.md is not tracked, so a fresh clone would not receive "
+        "the contribution instructions"
     )
 
 

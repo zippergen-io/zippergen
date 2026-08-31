@@ -452,6 +452,7 @@ configurations, participants, actions, and connector requirements.
 | [Durable storage](https://github.com/zippergen-io/zippergen/blob/main/docs/durable-storage.md) | current-state recovery, crash guarantees, identity, and history retention |
 | [Workflow authoring skill](https://github.com/zippergen-io/zippergen/blob/main/.agents/skills/zippergen-workflows/SKILL.md) | what a coding agent follows, also printed by `zippergen skill` |
 | [Changelog](https://github.com/zippergen-io/zippergen/blob/main/CHANGELOG.md) | release notes and upgrade-visible changes |
+| [Contributing](https://github.com/zippergen-io/zippergen/blob/main/CONTRIBUTING.md) | working agreements and the gate a change has to pass |
 
 ## Formal foundation
 
