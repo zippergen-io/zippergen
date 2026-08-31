@@ -502,16 +502,26 @@ zg run --input message="Could we move our meeting to Thursday?" --yes
 
 \subsection{One configuration pattern}
 
-Provider connections, models, coding assistants, and connectors use one small
-grammar:
+Provider connections, models, coding assistants, and connectors follow the
+same configuration pattern:
 
 \begin{lstlisting}[style=shell]
-zg provider configure NAME KIND
-zg TYPE configure NAME ...
-zg TYPE assign TARGET NAME
-zg TYPE check [NAME]
-zg TYPE remove NAME
+zg provider configure NAME PROVIDER_KIND
+zg model configure NAME CONNECTION MODEL
+zg assistant configure NAME BACKEND
+zg connector configure NAME CONNECTION [CONNECTOR_KIND]
+
+zg model assign TARGET NAME
+zg assistant assign TARGET NAME
+zg connector assign TARGET NAME
+
+zg FAMILY check [NAME]
+zg FAMILY remove NAME
 \end{lstlisting}
+
+\texttt{FAMILY} is \texttt{provider}, \texttt{model}, \texttt{assistant}, or
+\texttt{connector}. Square brackets mark an optional value. The connector kind
+is inferred when the selected connection supports only one.
 
 A connector target is either a service requirement the workflow declares by
 name or a participant whose actions ask a human; the workflow says which, so
@@ -1555,7 +1565,7 @@ zg connector assign Mailbox approval-chat
 \texttt{connector assign TARGET NAME} & fill a declared requirement, or route human actions \\
 \texttt{TARGET} $\in$ \{\texttt{default}, participant, \texttt{Participant.action}\} & three levels, most specific wins; same for models and assistants \\
 \texttt{connector unassign TARGET} & remove connector routing \\
-\texttt{TYPE rename OLD NEW} & rename one configuration and everything naming it \\
+\texttt{FAMILY rename OLD NEW} & rename one configuration and everything naming it \\
 \texttt{connector check [NAME]} / \texttt{connector remove NAME} & check or remove \\
 \texttt{completion zsh|bash|fish} & print dynamic shell completion \\
 \bottomrule
@@ -1599,10 +1609,13 @@ three things:
 The \texttt{Writer} in the tutorial is a bystander. Its local program does not
 mention the approval, so it cannot wait on it or disagree about it.
 
-The main theorem states that the projected local programs produce exactly the
-behaviours of the global workflow, up to the control messages projection
-introduces. Deadlock freedom follows for well-formed workflows. Both are
-machine-checked in Lean 4.
+The formal results establish two properties for well-formed workflows.
+Complete executions of the projected local programs produce exactly the
+behaviours of the global workflow, up to generated control messages. Every
+finite projected execution prefix can also be extended to a complete one. The
+second property is the formal deadlock-freedom guarantee. The core results are
+machine-checked in Lean 4. The parallel extension is established separately in
+the EXPRESS/SOS paper.
 
 That is the trade the whole system makes: write one protocol, accept the
 language's restrictions, and get a distributed implementation that cannot

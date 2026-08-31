@@ -235,7 +235,7 @@ intended path is to say what you want in ordinary language. Open a coding agent
 in this directory:
 
 \begin{lstlisting}[style=shell]
-claude
+claude  # or: codex
 \end{lstlisting}
 
 and ask for it:
@@ -413,9 +413,9 @@ def email_approval__Mailbox() -> int:
 \end{lstlisting}
 
 \begin{notebox}{The Writer has no approval branch}
-Nobody wrote either of those lines. Put the two programs side by side and the
-\texttt{Mailbox} does something for each of its two control structures, while the
-\texttt{Writer} does something for only one of them.
+ZipperGen generated both local programs from the workflow. Put them side by
+side: \texttt{Mailbox} has code for each of its two control structures, while
+\texttt{Writer} has code for only one of them.
 
 The loop, the \texttt{Writer} must know about: it has work inside it, so the
 \texttt{Mailbox} tells it every round whether to continue, and tells it once more,
@@ -432,9 +432,11 @@ not arise, because the projection worked out who needed telling and who did
 not.
 \end{notebox}
 
-This is not a convenience. It is the construction the correctness proof is
-about: the projected local programs produce exactly the behaviours of the
-global protocol, and deadlock freedom follows for well-formed workflows.
+This is not a convenience. For well-formed workflows, complete executions of
+the projected local programs produce exactly the behaviours of the global
+protocol, up to generated control messages. Every finite projected execution
+prefix can also be extended to a complete one. The second property is the
+formal deadlock-freedom guarantee.
 
 \section{Run it}
 
@@ -850,7 +852,7 @@ to a spreadsheet.
 \texttt{specification.md} & what it should do, in prose, maintained by you and your agent \\
 \texttt{workflow.py} & the coordination, as visible Python \\
 \texttt{zippergen.toml} & which model, which chat, committed, no secrets \\
-\texttt{mailbox/} & where messages arrive, a real inbox on a real server \\
+\texttt{mailbox/} & the local inbox watched by this example \\
 \bottomrule
 \end{tabularx}
 \end{center}
