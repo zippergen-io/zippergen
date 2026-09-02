@@ -211,8 +211,8 @@ def email_approval__Writer() -> None:
         send('Mailbox', draft)
 ```
 
-**The Writer has no approval branch.** Nobody wrote those two programs by
-hand.
+**The Writer has no approval branch.** ZipperGen generated both local programs
+from the workflow.
 
 At each loop iteration, the Writer learns whether another iteration follows.
 It receives no approval result because neither approval branch contains Writer

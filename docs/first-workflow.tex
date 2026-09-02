@@ -126,16 +126,16 @@
 \begin{abstract}
 You will build a small application that watches a mailbox, asks a language
 model to draft a reply to each message, and asks \emph{you} to approve it
-before anything is sent. It does not stop on its own. It is a service, and the
-last section leaves it running on a server. It is short enough to read in
-one sitting, and it already contains everything that makes ZipperGen worth
+before anything is sent. It runs continuously as a service, and by the end of
+the tutorial it is running on a server. It is short enough to read in one go,
+but it already contains everything that makes ZipperGen worth
 using: two participants, a model call, an explicit human decision, a branch
-that only the decider takes, and a loop that keeps the whole thing alive.
+owned by the decider, and a loop that keeps the whole thing alive.
 
-There is no separate ZipperGen development environment to learn. You work in an
-ordinary directory with an ordinary command line, and, if you like, a coding
-agent such as Claude Code or Codex. This tutorial shows both, and is honest about which parts
-need a person.
+Development happens in an ordinary directory with ordinary command-line tools.
+You can write the workflow yourself or ask a coding agent such as Claude Code
+or Codex to help. This tutorial shows both paths and points out where human
+input is needed.
 \end{abstract}
 
 \section{What you are building}
@@ -153,12 +153,13 @@ need a person.
   \draw[zgflow] (ask) -- (drop);
   \draw[zgflow] (send.west) .. controls +(left:12mm) and +(up:12mm) ..
     node[above,font=\scriptsize,pos=0.5]{next message} (msg.north);
-  \draw[zgflow] (drop.west) .. controls +(left:12mm) and +(down:12mm) .. (msg.south);
+  \draw[zgflow] (drop.west) .. controls +(left:12mm) and +(down:12mm) ..
+    node[below,font=\scriptsize,pos=0.5]{next message} (msg.south);
 \end{tikzpicture}
 \end{center}
 
-It then waits for the next message, and does it again. Nothing ends the loop,
-which is what makes this a service rather than a script.
+After sending or discarding the reply, the service waits for the next message
+and repeats. The loop keeps it running as a service.
 
 Concretely, you want this to happen:
 
@@ -170,19 +171,18 @@ Could we move our meeting to Thursday afternoon?
 Thursday afternoon works for me. How about 3pm?
 
 \smallskip
-\texttt{[ Send ] [ Reject ]}
+\texttt{[ Confirm ] [ Decline ]}
 \end{notebox}
 
 Two participants exchange messages, and one local action asks a person. What
-happens next depends on that person's answer. That is a coordination problem,
-and it is the kind of thing ZipperGen exists to make readable.
+happens next depends on that person's answer. ZipperGen makes this coordination
+explicit and readable.
 
 \begin{notebox}{What you need}
 \begin{itemize}
   \item Python 3.11 or newer and ZipperGen installed.
-  \item Nothing else for the first two thirds. The model is mocked and the
-        approval happens in your terminal.
-  \item For the last section, a Telegram bot token, if you want the approval to
+  \item The first run uses a mock model and terminal approval.
+  \item For the Telegram section, a bot token, if you want the approval to
         arrive on your phone.
 \end{itemize}
 \end{notebox}
@@ -199,7 +199,7 @@ ZipperGen project: email-approval
   zippergen.toml     created
   specification.md   created
   AGENTS.md          created
-  CLAUDE.md           created
+  CLAUDE.md          created
 \end{lstlisting}
 
 \begin{notebox}{\texttt{zg} is short for \texttt{zippergen}}
@@ -208,58 +208,55 @@ uses \texttt{zg}, because the commands you type often are the ones worth
 shortening.
 \end{notebox}
 
-That is the whole of project creation. It writes four files and stops: it asks
-you nothing, and it configures nothing.
+The command creates the four files above. Configuration comes later, when you
+select a model and connector.
 
 \begin{itemize}
   \item \texttt{zippergen.toml} is the project's visible configuration: every
         non-secret choice, including the answers you give when deploying. It is
-        committed, and it never contains a credential.
+        committed, while credentials stay in ZipperGen's private store.
   \item \texttt{specification.md} says what the workflow is meant to do, in prose.
   \item \texttt{AGENTS.md} tells a coding agent to run
         \texttt{zippergen skill} before touching workflow code.
   \item \texttt{CLAUDE.md} points Claude Code at the same shared instructions.
 \end{itemize}
 
-It also creates \path{.zippergen/}, holding one generated value that identifies
-this checkout so its credentials can be found again. That is not configuration
-and not yours to edit, so it is not in \path{zippergen.toml}; the directory
-ignores itself, so it does not travel with a clone. Somebody who clones this
-project gets no identity, is keyed by their own path, and never reaches your
-credentials.
+It also creates \path{.zippergen/}, which holds the generated identity for this
+checkout and links it to its credentials. Git ignores this directory. A clone
+therefore selects its private workspace from its local path and uses its own
+credentials. Keep \path{zippergen.toml} for visible configuration and leave
+\path{.zippergen/} to ZipperGen.
 
 \section{Describe what you want}
 
-You can write the workflow yourself, and the next section shows the code. But the
-intended path is to say what you want in ordinary language. Open a coding agent
-in this directory:
+The next section shows the workflow code. You can write it yourself or describe
+what you want in ordinary language. Open a coding agent in the project
+directory:
 
 \begin{lstlisting}[style=shell]
 claude  # or: codex
 \end{lstlisting}
 
-and ask for it:
+Then ask:
 
 \begin{lstlisting}[style=agent]
 > Build a ZipperGen workflow that watches a mailbox directory, asks an LLM
   to draft a short reply to each new message, and asks me to approve it
   before it is sent. It should keep running and wait for the next message.
 
-  Use plain .txt files directly inside mailbox/. A file containing only
-  "Can we meet on Thursday" is a complete message. Do not require From or
-  Subject headers, and do not add an inbox/ subdirectory. Use mailbox/ as the
-  local default rather than a required workflow input. The exact command
-  "zg run --llm mock" must reach the approval without asking a setup question.
-  Before reporting success, test that exact file, layout, and command.
+  Use plain .txt files directly inside mailbox/, with the entire file as the
+  message body. A file containing only "Can we meet on Thursday" is a complete
+  message. Use mailbox/ as the local default. Verify that "zg run --llm mock"
+  reaches approval directly with this exact layout.
 \end{lstlisting}
 
-The agent reads \texttt{AGENTS.md}, which points it at \texttt{zg skill}.
-Those are ZipperGen's own instructions for how to write a workflow, what to check, and
-what never to touch. It writes the files, then checks its work with the same
+The agent reads \texttt{AGENTS.md}, which directs it to run \texttt{zg skill}.
+The skill explains how to write and check a workflow and which boundaries to
+preserve. The agent writes the files, then checks its work with the same
 commands you would use:
 
 \begin{lstlisting}[style=agent]
-I created specification.md and workflow.py.
+I updated specification.md and created workflow.py.
 
   $ zg validate
   Workflow email_approval: valid
@@ -268,23 +265,20 @@ Two participants, Mailbox and Writer, and one decision that Mailbox owns:
 whether to send the draft. Ask me to change anything.
 \end{lstlisting}
 
-That is the shape of the whole thing. You describe what you want. The agent
-edits ordinary files and uses ZipperGen's actions to check them. Nothing
-happened that you could not have done by hand, and everything it did is visible
-in the directory.
+You describe what you want. The agent edits ordinary files and checks them with
+ZipperGen's commands. The workflow and its checks remain visible in the project
+directory for you to inspect or edit.
 
 \begin{notebox}{Where the skill comes from}
 \texttt{zg skill} prints instructions that ship inside the package, so they
 match the version you have installed. They are ordinary prose in the
-repository, not generated text. You can read them, and you can disagree with
-them. An already open Claude or Codex conversation does not refresh its context
-when ZipperGen is upgraded; start a new session, or explicitly ask it to run
-\texttt{zg skill} again.
+repository. After upgrading ZipperGen, start a new Claude or Codex session, or
+ask the current session to run \texttt{zg skill} again.
 \end{notebox}
 
 \section{What comes out}
 
-Visible, readable Python. This is the whole coordination:
+The workflow is visible, readable Python:
 
 \begin{lstlisting}[language=Python]
 @workflow
@@ -310,9 +304,9 @@ worth noticing.
 the right side receives, and the names in brackets say which variables carry
 the value.
 
-\texttt{Writer: draft = draft\_reply(message)} is an action performed by one
-participant. \texttt{draft\_reply} is an \texttt{@llm} action, which is a model
-call with a prompt and a declared output.
+The line beginning \texttt{Writer:} is an action performed by one participant.
+\texttt{draft\_reply} is an \texttt{@llm} action, which is a model call with a
+prompt and a declared output.
 
 \texttt{Mailbox: approved = approve\_reply(draft)} is a \texttt{@human} action. It
 stops and waits for a person.
@@ -323,16 +317,16 @@ makes it. That annotation is the important one, and the next section shows why.
 \texttt{while message @ Mailbox} is a loop, owned the same way. The
 \texttt{Mailbox} decides each round whether there is another message to handle.
 \texttt{next\_unread\_message} waits until there is one, so in practice that
-decision is always yes and the workflow never finishes. That is the point.
+decision is always yes and the workflow keeps running.
 
-\begin{notebox}{One action hides the awkward part}
-Mailboxes are fiddly: what to do when nothing is unread, how to avoid handling
-the same message twice, whether to poll or block. All of it sits behind
+\begin{notebox}{Mailbox handling stays local}
+Mailbox handling involves waiting for new mail, choosing between polling and
+blocking, and marking each message as handled. All of it sits behind
 \texttt{next\_unread\_message}, whose contract is one sentence: \emph{return the
 next message, waiting if there is none}. Here it takes the oldest
-\texttt{.txt} file from \texttt{mailbox/} and renames it \texttt{.done}, so no
-message is handled twice even after a crash. The coordination above does not
-change when you point it at a real inbox.
+\texttt{.txt} file from \texttt{mailbox/} and renames it \texttt{.done}, making
+each message one-shot even across a crash. The same coordination works with a
+real inbox.
 \end{notebox}
 
 \section{Check it yourself}
@@ -346,6 +340,7 @@ zg validate
 \begin{lstlisting}
 Workflow email_approval: valid
 OK   lifelines: 2 unique lifeline(s): Writer, Mailbox
+OK   variable availability: every participant reads only values definitely available locally
 OK   projection Writer: WhileRecvStmt
 OK   projection Mailbox: SeqStmt
 OK   deployment declaration: 1 field(s), 0 package(s), 0 setup step(s)
@@ -357,15 +352,14 @@ OK   canonical rendering: global and local code views rendered successfully
 participant, and renders it back. If it passes, the workflow is well formed and
 the deadlock-freedom guarantee applies to it.
 
-There is no privileged mode here. The agent and you have the same commands.
-Credentials are the exception, and you supply those yourself. The rest of
-this tutorial mixes both: asking the agent when a question is easier to say
-than to type, and running commands directly when they are short.
+You and the agent use the same commands. You supply credentials yourself. The
+rest of this tutorial moves between asking the agent for prose-level changes
+and running short commands directly.
 
-\section{The moment that matters}
+\section{Inspect the projected programs}
 
-The workflow has one decision and \texttt{Mailbox} owns it. Rather than
-reading the code again, ask:
+The workflow has one decision and \texttt{Mailbox} owns it. Ask the agent for
+the \texttt{Writer}'s projected program:
 
 \begin{lstlisting}[style=agent]
 > What does the Writer actually run?
@@ -381,12 +375,12 @@ reading the code again, ask:
           draft = draft_reply(message)
           send('Mailbox', draft)
 
-The Writer is told each round whether to keep going, then drafts one
-reply. It is never told whether the reply was sent: Mailbox owns the
-approval decision, and the Writer takes no part in it.
+The Writer receives the loop decision each round and drafts one reply.
+Mailbox owns the later approval decision, so it appears only in Mailbox's
+program.
 \end{lstlisting}
 
-Run it yourself and you get the same four lines. Now compare the
+Run it yourself and you get the same projection. Now compare the
 \texttt{Mailbox}, which owns both the loop and the decision:
 
 \begin{lstlisting}[style=shell]
@@ -417,26 +411,24 @@ ZipperGen generated both local programs from the workflow. Put them side by
 side: \texttt{Mailbox} has code for each of its two control structures, while
 \texttt{Writer} has code for only one of them.
 
-The loop, the \texttt{Writer} must know about: it has work inside it, so the
-\texttt{Mailbox} tells it every round whether to continue, and tells it once more,
-at the end, not to. That is the \texttt{send\_decision} in the
-\texttt{else}.
+The \texttt{Writer} participates in the loop, so \texttt{Mailbox} sends it the
+loop decision every round and sends the final false decision on exit. The
+\texttt{send\_decision} in the \texttt{else} carries that final decision.
 
-The approval, the \texttt{Writer} must \emph{not} know about: it does nothing
-in either branch, so the decision is erased from its program entirely. It
-cannot wait on it, disagree with it, or deadlock against it.
+The approval belongs entirely to \texttt{Mailbox}. The \texttt{Writer}
+participates in neither branch, so projection erases that decision from its
+program. Its execution proceeds independently of the answer.
 
-In a hand-written multi-agent system this is exactly where the bugs live: one
-agent waits for a message the other decided not to send. Here the question does
-not arise, because the projection worked out who needed telling and who did
-not.
+Hand-written multi-agent systems often fail here when one agent waits for a
+message that another branch omits. Projection derives the required control
+recipients from the workflow.
 \end{notebox}
 
-This is not a convenience. For well-formed workflows, complete executions of
-the projected local programs produce exactly the behaviours of the global
-protocol, up to generated control messages. Every finite projected execution
-prefix can also be extended to a complete one. The second property is the
-formal deadlock-freedom guarantee.
+These projection rules carry a formal guarantee. For well-formed workflows,
+complete executions of the projected local programs produce exactly the
+behaviours of the global protocol, up to generated control messages. Every
+finite projected execution prefix can also be extended to a complete one. The
+second property is the formal deadlock-freedom guarantee.
 
 \section{Run it}
 
@@ -447,9 +439,9 @@ mkdir -p mailbox
 echo "Can we meet on Thursday" > mailbox/01.txt
 \end{lstlisting}
 
-The files go directly in \texttt{mailbox/}. There is no
-\texttt{mailbox/inbox/} directory. A plain one-line file is the message body,
-so headers such as \texttt{From} and \texttt{Subject} are optional.
+Put the files directly in \texttt{mailbox/}. A plain one-line file is the
+message body, and headers such as \texttt{From} and \texttt{Subject} are
+optional.
 
 Validation also makes unexpected setup inputs visible. For this workflow it
 must report:
@@ -458,7 +450,7 @@ must report:
 OK   workflow inputs: none, the run starts without setup questions
 \end{lstlisting}
 
-No model key needed yet. \texttt{--llm mock} answers model calls with a
+The mock backend works without a model key and answers model calls with a
 placeholder:
 
 \begin{lstlisting}[style=shell]
@@ -466,6 +458,8 @@ zg run --llm mock
 \end{lstlisting}
 
 \begin{lstlisting}
+No real model is in use: every participant answers with the mock. Assign one with 'zg model assign TARGET NAME'.
+
 REQUEST · Mailbox
 
 Proposed reply:
@@ -476,31 +470,35 @@ Send this reply? [y/n]: y
 ✓ Mailbox · reply sent
 \end{lstlisting}
 
-Then nothing happens, and that is correct: it is waiting for the next message.
-Drop another file into \texttt{mailbox/} from a second terminal and it wakes up
-and handles that one too. Answering \texttt{n} takes the other branch.
+The process now waits for the next message. Drop another file into
+\texttt{mailbox/} from a second terminal and it wakes up and handles that one
+too. Answering \texttt{n} takes the other branch.
 
 \texttt{mailbox/01.txt} is now \texttt{mailbox/01.done}. That rename is what
 stops a message being answered twice, including after a crash.
 
-Stop it with \texttt{Ctrl-C}. When you want a run that ends by itself, in a test
-or just to see a result, give it a budget:
+Stop it with \texttt{Ctrl-C}. For a run that ends by itself, add two new
+messages and give it a budget:
 
 \begin{lstlisting}[style=shell]
-zg run --llm mock --option max_messages=2
+echo "Please send the notes by Friday" > mailbox/02.txt
+echo "Can we talk next week?" > mailbox/03.txt
+printf 'y\nn\n' | zg run --llm mock --option max_messages=2
 \end{lstlisting}
 
 \begin{lstlisting}
 {"result": 1}
 \end{lstlisting}
 
-Two messages handled, one of them approved.
+The two answers approve the first reply and decline the second. The result
+counts replies sent, so it is one.
 
 \begin{notebox}{Testing a specific branch}
-\texttt{mock} answers every action the same way, so a workflow driven by it
-takes one path and no other. When you want to drive a particular branch, such as
-the rejection, script the answers with \texttt{--llm scripted:replies.json}. The
-guide covers it. You do not need it yet.
+\texttt{mock} supplies placeholder answers for model actions. A
+\texttt{@human} action still reads an answer from the terminal or its assigned
+connector. Pipe \texttt{y} or \texttt{n}, as above, when a test needs a fixed
+human decision. Use \texttt{--llm scripted:replies.json} when a model answer
+must be fixed.
 \end{notebox}
 
 \section{Use a real model}
@@ -517,8 +515,9 @@ zg run
 \end{lstlisting}
 
 The model identity and assignment are written to \path{zippergen.toml}, so they
-travel with the project. The credential command asks for the API key without
-echo and saves it privately for the named provider connection on this computer.
+travel with the project. The credential command reads the API key through a
+hidden prompt and saves it privately for the named provider connection on this
+computer.
 You can instead export the key before running the command. Several
 participants can share the same named configuration, and one exact action can
 be assigned with a target such as \texttt{Writer.draft\_reply}.
@@ -528,7 +527,7 @@ Temperature is portable model behavior. An individual
 \texttt{@llm(temperature=...)} declaration overrides the named configuration.
 Zero reduces sampling variation but does not guarantee identical answers from
 a hosted model. If a selected model removed sampling controls, ZipperGen
-reports the explicit setting instead of silently ignoring it.
+reports that incompatibility.
 
 When working by hand, you can also run \texttt{zg model configure} and
 \texttt{zg model assign} with no values. ZipperGen then asks the questions and
@@ -538,23 +537,23 @@ separately. Full commands remain better for scripts and coding agents.
 \section{Approval on your phone}
 
 So far the approval has appeared in whichever terminal is running the workflow.
-That is right while you are developing and wrong for something left running.
-Ask for the change:
+Terminal approval suits development. An unattended workflow needs another
+route, so ask for the change:
 
 \begin{lstlisting}[style=agent]
 > I want the approval to arrive on Telegram instead.
 \end{lstlisting}
 
 \begin{lstlisting}[style=agent]
-Done, as far as I can take it. The workflow itself does not change --- the
-Mailbox's @human action is already the approval; what changes is where the
-question is delivered, which is project configuration.
+The Mailbox's @human action already defines the approval, so the workflow stays
+the same. I updated the project configuration that controls where the question
+is delivered.
 
-I have updated specification.md to say approvals go to Telegram, and
+I also updated specification.md to say approvals go to Telegram, and
 zg validate still passes.
 
-One setup remains, and it belongs in your terminal. I should not ask you
-for the chat id or bot token in this conversation. Run:
+Finish the private setup in your terminal, where ZipperGen can read the chat id
+and bot token through interactive prompts. Run:
 
     zg provider configure approval-bot telegram
     zg provider set-credential approval-bot
@@ -564,23 +563,19 @@ for the chat id or bot token in this conversation. Run:
 Tell me when that is done and I will check the configuration.
 \end{lstlisting}
 
-The agent can display the complete result with \texttt{zg config}, which does
-not contact providers. Use \texttt{zg check} when you want ZipperGen to
-verify real readiness; it contacts configured providers and may send a small
-model request.
+The agent can display the complete stored configuration offline with
+\texttt{zg config}. Use \texttt{zg check} when you want ZipperGen to verify
+live readiness. It contacts configured providers and may send a small model
+request.
 
-That is the boundary, and it is worth being precise about it. The agent did
-everything it could and then stopped. The token is entered interactively in
-your terminal rather than passed as a command-line argument, so it does not
-appear in the agent's conversation, in your shell history, or in the
-repository.
+This division keeps workflow edits with the agent and credential entry in your
+terminal. The hidden prompt keeps the token out of the agent's conversation,
+shell history, and repository.
 
-That is a real boundary, and it is not an absolute one. Once saved, the token
-lives in a file under \texttt{ZIPPERGEN\_HOME} readable by your user, so a
-coding agent running as you, with a shell, could read it afterwards. If you
-want a hard capability boundary rather than a convention, run the agent without
-access to your credential store: a separate account, or an environment that
-does not carry \texttt{ZIPPERGEN\_HOME}.
+The saved token lives in a file under \texttt{ZIPPERGEN\_HOME} readable by your
+user. A coding agent running as that user with shell access can therefore read
+it. For a hard capability boundary, give the agent a separate account or an
+environment with a separate credential store.
 
 \noindent
 \begin{minipage}[t]{0.485\linewidth}
@@ -628,48 +623,43 @@ Mailbox will be asked through approval-chat.
 \end{minipage}
 \par\smallskip
 
-Here \texttt{approval-chat} is a name you choose, not a ZipperGen keyword.
+Here \texttt{approval-chat} is a user-chosen name.
 The provider commands name one Telegram bot and save its token on this
 computer. The connector configuration says \emph{which} chat. The assignment
 says \emph{whose action} is routed there: \texttt{Mailbox}, whose
 \texttt{@human} action is the approval.
 
-And two things went to two different places, on purpose:
+The chat destination and bot credential are stored separately:
 
 \begin{center}
 \begin{tabularx}{0.92\linewidth}{@{}lX@{}}
 \toprule
 \textbf{chat id} & written to \texttt{zippergen.toml}, committed, shared \\
-\textbf{bot token} & typed, never an argument, stays on this computer \\
+\textbf{bot token} & entered through a hidden prompt, stays on this computer \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-A colleague who clones the project gets the chat id and supplies their own
-token. The token never reaches your shell history, the repository, or the
-agent.
-
-\begin{notebox}{Authorizing Google from another computer}
-The same split appears for Gmail and Sheets, with one extra step because a
-server usually has no browser. First configure a Google connection, then run
-\texttt{zg provider authorize google-work
--{}-scopes ...} on your own machine. It opens a browser and prints an encoded
-result. Paste that into \texttt{zg provider accept google-work} on the server. The
-credential never appears in a command line.
-\end{notebox}
+A colleague who clones the project receives the chat id and supplies their own
+token through the hidden prompt.
 
 \section{Runs that survive interruption}
 
-There is one verb for running a workflow. \texttt{--durable} records the run as
-it goes, so an interrupted run continues rather than starting over:
+Add \texttt{--durable} to a foreground run to record each step and resume from
+its committed position after an interruption:
 
 \begin{lstlisting}[style=shell]
+echo "Could we meet on Tuesday?" > mailbox/04.txt
 zg run --durable --llm mock
 \end{lstlisting}
 
 \begin{lstlisting}
 Workflow email_approval: valid
-Run email_approval-20260808-132719-612865000
+No real model is in use: every participant answers with the mock. Assign one with 'zg model assign TARGET NAME'.
+Run email_approval-20260831-132719-612865000
+
+REQUEST · Mailbox
+
 Proposed reply:
 ...
 \end{lstlisting}
@@ -682,16 +672,15 @@ zg run --resume
 \end{lstlisting}
 
 The model result and control position committed before the interruption are
-preserved, so this run resumes at the approval rather than drafting again. A
-crash during an external call can still repeat that call if its result had not
-yet committed.
+preserved, so this run resumes at the approval and skips another draft. A crash
+during an external call can still repeat that call if its result had not yet
+committed.
 
 To abandon the selected run, stop it with Ctrl-C and use \texttt{zg run
-reset}. Its record and SQLite state are permanently discarded and no run
-remains current; add \texttt{-{}-archive} only when a recoverable private copy
-is wanted. This does not start another run; use \texttt{zg run -{}-durable}
-when one is wanted. Starting a new durable run also discards an older selected
-development run.
+reset}. This permanently discards its record and SQLite state and clears the
+current run. Add \texttt{-{}-archive} when you want a recoverable private copy.
+Start another run with \texttt{zg run -{}-durable}. Starting a new durable run
+also discards an older selected development run.
 
 While a durable run is active in one terminal, another terminal can keep its
 program position open and refresh it once per second:
@@ -700,28 +689,27 @@ program position open and refresh it once per second:
 zg run inspect --watch --agent Writer
 \end{lstlisting}
 
-Pressing Ctrl-C in this view closes only the view. It does not interrupt the
-run.
+Pressing Ctrl-C in this view closes the view and leaves the run active.
 
-This matters more for a workflow that never ends than for one that finishes in
-a second. A foreground durable run continues with \texttt{zg run -{}-resume};
-a deployment is restarted by its service manager. In both cases committed
-state prevents it from starting the workflow over after an ordinary stop.
+For a long-running workflow, continue a foreground durable run with
+\texttt{zg run -{}-resume}. A deployment restarts through its service manager.
+In both cases, committed state preserves the workflow position across an
+ordinary stop.
 
 \section{Deploy it}
 
 The ordinary deployment command prepares, checks, and starts the service. For
-this example it first asks for the mailbox directory; enter the project
+this example it first asks for the mailbox directory. Enter the project
 directory you used above, such as \texttt{mailbox}. ZipperGen records its
-absolute path so the service does not accidentally watch an empty directory
-inside its immutable source bundle:
+absolute path so the deployed service continues watching that directory from
+outside its immutable source bundle:
 
 \begin{lstlisting}[style=shell]
 zg deploy
 \end{lstlisting}
 
-Every model, assistant CLI, and connector is probed first, and a failure stops
-the deployment before it starts:
+Every model, assistant CLI, and connector must pass a readiness probe before the
+service starts:
 
 \begin{lstlisting}[style=shell]
 zg deploy logs
@@ -732,25 +720,27 @@ zg deploy trace --follow
 
 \texttt{zg deploy status} distinguishes freshness of the ZipperGen runtime
 from freshness of the workflow source bundle. A stale warning means that the
-immutable service is still running its previous snapshot; redeploy to update
-it. Status also names an external action currently in flight, with its elapsed
+immutable service is still running its previous snapshot. Run \texttt{zg
+deploy stop}, then bare \texttt{zg deploy}, to publish and start the update.
+Status also names an external action currently in flight, with its elapsed
 time, and the last terminal lifeline failure. Trace begins with service and
-runtime freshness, so a stopped deployment is not mistaken for a quiet one.
-\texttt{inspect -{}-watch} redraws current state; \texttt{trace -{}-follow}
+runtime freshness and identifies a stopped deployment explicitly.
+\texttt{inspect -{}-watch} redraws current state. \texttt{trace -{}-follow}
 keeps the event table and appends newly committed rows. A live action first
 appears as \emph{start}, then \emph{done} or \emph{failed}. Only a static trace
-calls a start \emph{incomplete} when no terminal event was recorded; use status
+calls a start \emph{incomplete} when no terminal event was recorded. Use status
 to decide what is running now.
 
-Use \texttt{zg deploy -{}-no-start} only when you deliberately want to prepare
-and review a stopped deployment before a later \texttt{zg deploy start}. It is
-not a required preliminary step.
+Use \texttt{zg deploy -{}-no-start} when you deliberately want to prepare and
+review a stopped deployment before a later \texttt{zg deploy start}. The usual
+command is bare \texttt{zg deploy}.
 
-The trace keeps the newest 10,000 events by default. That is a FIFO row count,
-not a time or byte guarantee: frequent routine polls can evict an incident, and
-events carrying whole emails can make the same count use much more disk. Measure
-the real workflow before choosing \texttt{zg deploy -{}-history-keep N}; very
-large budgets also make the periodic writer-path prune more expensive.
+The trace keeps the newest 10,000 events by default. The budget counts FIFO
+rows, not time or bytes. Frequent routine polls can evict an incident, and
+events carrying whole emails can make the same count use much more disk.
+Measure the real workflow before choosing
+\texttt{zg deploy -{}-history-keep N}. Very large budgets also make the
+periodic writer-path prune more expensive.
 
 \texttt{zg deploy reset -{}-yes} is different from stopping. It archives and
 replaces all durable execution state, including connector progress, and always
@@ -764,39 +754,34 @@ zg deploy remove
 \end{lstlisting}
 
 Its profile, durable store and log are moved to ZipperGen's trash directory
-rather than deleted. Archived is not the same as left in place: deploying again
-builds a new deployment and starts from an empty store. Credentials are deleted
-even for an ordinary removal and must be entered or authorized again; the
-managed environment, service files and bundled source are deleted because a
-later deploy rebuilds them. \texttt{--purge} deletes everything permanently and
-keeps no archive.
+for recovery. Deploying again builds a new deployment with an empty store.
+Removal also deletes its credentials, which must be entered again. A future
+deployment rebuilds the managed environment, service files, and bundled
+source. \texttt{--purge} also deletes the archived profile, store, and log.
 
 \section{Put it on a server}
 
-This section is optional. Everything above works on your laptop. Read on only
-when you want the workflow to keep running after you close it.
+Everything above works on your laptop. Continue when you want the workflow to
+keep running after you close it.
 
-There is no ZipperGen deployment host and no server to sign up for. You copy
-the project to a machine, install ZipperGen there, and run the same commands
-you have just been running. That is the whole mechanism.
+ZipperGen deploys to a machine you control. Copy the project there, install
+ZipperGen, and run the same commands you used locally.
 
 \begin{center}
 \begin{tikzpicture}[node distance=6mm]
   \node[zgstage] (agent) {coding agent\\(your laptop)};
   \node[zgstage, below=of agent] (files) {\texttt{workflow.py}\\\texttt{specification.md}\\\texttt{zippergen.toml}};
   \node[zgstage, right=16mm of files] (server) {project directory\\(the server)};
-  \node[zgstage, right=of server] (run) {\texttt{zg deploy start}\\runs it};
+  \node[zgstage, right=of server] (run) {\texttt{zg deploy}\\prepares and runs it};
   \draw[zgflow] (agent) -- (files);
   \draw[zgflow] (files) -- node[above,font=\scriptsize]{git} (server);
   \draw[zgflow] (server) -- (run);
 \end{tikzpicture}
 \end{center}
 
-Notice what does \emph{not} cross to the right. The coding agent stays on your
-laptop. It wrote the workflow, but it is not part of the running application, and
-the server never needs Claude, Codex, or an agent of any kind installed. The
-server needs three things: ZipperGen, the project files, and its own
-credentials.
+Only the project files cross to the server. The coding agent stays on your
+laptop after writing the workflow. The server runs ZipperGen with those project
+files and its own credentials.
 
 On an ordinary Linux machine:
 
@@ -805,22 +790,21 @@ git clone https://github.com/me/email-approval.git && cd email-approval
 python3 -m venv .venv && source .venv/bin/activate
 pip install "git+https://github.com/zippergen-io/zippergen.git"
 
-zg provider configure approval-bot telegram
+mkdir -p mailbox
+zg provider set-credential openai-main
 zg provider set-credential approval-bot
-zg connector configure approval-chat approval-bot
-zg connector assign Mailbox approval-chat
 
 zg deploy
 \end{lstlisting}
 
-The credentials did not arrive with the clone, because they were never in it.
-\texttt{provider set-credential} asks for the bot token, does not echo it, and stores it
-outside the project. That is why cloning gives the server the routing without
-giving it the secret.
+The clone supplies the model and connector routing. The two credential commands
+read the OpenAI key and Telegram bot token through hidden prompts and store them
+outside the project. When \texttt{zg deploy} asks for the mailbox directory,
+enter \texttt{mailbox}.
 
 The last command prepares, checks, and starts the deployment. It probes the
-model and connector first, so a token typed wrongly here fails now rather than
-in the middle of an approval. On Linux it installs a small \texttt{systemd}
+model and connector first, so a mistyped token is reported before the service
+begins handling approvals. On Linux it installs a small \texttt{systemd}
 user service that restarts the workflow if it fails, and enables that unit for
 autostart. A server account also needs its user manager to survive logout and
 start at boot. If local policy permits it, enable linger once:
@@ -832,19 +816,20 @@ zg deploy check
 
 The check reports both systemd autostart and linger. Before leaving the service
 unattended, log out once and reboot once, checking \texttt{zg deploy status}
-after each. You never write the unit file, and \texttt{zg deploy status},
-\texttt{zg deploy logs} and \texttt{zg deploy stop} manage it from here.
+after each. ZipperGen writes the unit file. \texttt{zg deploy status},
+\texttt{zg deploy logs}, and \texttt{zg deploy stop} manage it from here.
 
-This is the point of the loop. The workflow you built does not finish, so
-leaving it on a server is not a contrivance to show off a \texttt{deploy}
-command. It is the only sensible place for it. Your laptop can close.
+The workflow's continuous loop makes it a natural fit for a server. Once
+deployed, your laptop can close.
 
 The mailbox here is a directory, which is enough to see the shape. Point
-\texttt{next\_unread\_message} at a real inbox and nothing above changes.
+\texttt{next\_unread\_message} at a real inbox and the same coordination remains.
 \texttt{examples/inbox\_triage.py} is that workflow, reading Gmail and writing
 to a spreadsheet.
 
 \section{What you have}
+
+\enlargethispage{2\baselineskip}
 
 \begin{center}
 \begin{tabularx}{0.94\linewidth}{@{}lX@{}}
@@ -857,15 +842,16 @@ to a spreadsheet.
 \end{tabularx}
 \end{center}
 
-Three files and a directory, plus whatever your machine supplies: a model key
-in the environment, a bot token typed once.
+The table lists the workflow's three working files and its mailbox directory.
+The project also retains \texttt{AGENTS.md} and \texttt{CLAUDE.md} for coding
+agents. Each machine stores its model key and bot token privately.
 
-The thing worth remembering is the \texttt{Writer}. It learned about the loop,
-because it has work to do inside it. It never learned about the approval,
-because it has none. You wrote one protocol, and ZipperGen worked out what each
-participant runs, and worked it out in a way that cannot deadlock. As the
-workflow grows, with more participants, more loops and parallel regions, that is
-what stops the coordination becoming the hard part.
+The \texttt{Writer}'s projected program contains the loop where it has work and
+omits the approval owned by
+\texttt{Mailbox}. You wrote one protocol, and ZipperGen derived what each
+participant runs in a way that cannot deadlock. As the workflow grows, with
+more participants, more loops and parallel regions, that keeps the coordination
+manageable.
 
 \section{Where to go next}
 
