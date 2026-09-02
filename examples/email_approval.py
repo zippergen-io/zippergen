@@ -19,7 +19,7 @@ is project configuration, not something either workflow declares.
 
     mkdir -p mailbox
     echo "Can we meet on Thursday" > mailbox/01.txt
-    zippergen run examples/email_approval.py:email_approval --llm mock
+    zippergen run --workflow examples/email_approval.py:email_approval --llm mock
 """
 
 import time

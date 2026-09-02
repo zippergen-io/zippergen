@@ -256,6 +256,24 @@ def test_a_single_workflow_is_inferred_without_a_manifest_entry(
     assert "workflow_entry" not in workspace.manifest_path.read_text()
 
 
+def test_validate_reports_a_missing_selected_workflow_without_a_traceback(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "renamed-workflow"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project(name="renamed-workflow")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    workspace.select_workflow("workflow.py:email_approval")
+
+    with pytest.raises(
+        SystemExit,
+        match=r"^Workflow file not found: .*workflow\.py$",
+    ):
+        serve.main(["validate"])
+
+
 def test_workflow_shows_inferred_entry_and_selects_an_explicit_one(
     project, capsys
 ):

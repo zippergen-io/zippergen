@@ -7,7 +7,8 @@ Start with the built-in mock LLM and an in-terminal approval:
 
 Use a managed durable run and approve from another terminal:
 
-    uv run zippergen run --durable examples/tutorial_review.py:tutorial_review \
+    uv run zippergen run --durable \
+      --workflow examples/tutorial_review.py:tutorial_review \
       --llm mock \
       --input request="Explain why the sky is blue in two sentences." \
       --input max_retries=2 \

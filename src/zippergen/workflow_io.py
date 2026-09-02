@@ -54,6 +54,10 @@ class RunConfig:
 
 def _import_module_path(module_path: str) -> ModuleType:
     path = Path(module_path).expanduser().resolve()
+    if not path.exists():
+        raise SystemExit(f"Workflow file not found: {path}")
+    if not path.is_file():
+        raise SystemExit(f"Workflow path is not a file: {path}")
     package_parts: list[str] = []
     package_root = path.parent
     while (package_root / "__init__.py").is_file():
