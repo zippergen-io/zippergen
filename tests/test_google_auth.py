@@ -14,9 +14,17 @@ from zippergen.google_auth import (
     google_scope_names,
     google_scopes_cover,
     google_scopes_for_access,
+    install_command,
     normalize_google_client_json,
     parse_google_scopes,
 )
+
+
+def test_google_install_hint_uses_the_published_extra():
+    assert install_command() == 'uv tool install "zippergen"'
+    assert install_command(extra="google") == (
+        'uv tool install "zippergen[google]"'
+    )
 
 
 def test_google_scopes_follow_connector_access():

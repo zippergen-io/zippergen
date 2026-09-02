@@ -10,10 +10,11 @@
 ZipperGen is a Python library for coordinating LLM agents, humans, and
 services.
 
-You write one protocol. It says who sends what to whom, who calls a model, and
-who owns each decision. ZipperGen works out the program each participant runs,
-and runs them. For well-formed workflows covered by ZipperGen's formal model,
-those programs cannot deadlock. This is [proved formally](#formal-foundation).
+You write one protocol, which says who sends what to whom, who calls a model,
+and who owns each decision. ZipperGen works out the program each participant
+runs, and runs them. For well-formed workflows covered by ZipperGen's formal
+model, those programs cannot deadlock, which is [proved
+formally](#formal-foundation).
 
 ---
 
@@ -40,31 +41,27 @@ Claude Code / Codex ─ skill ────┤
 
 ## Install
 
-Not on PyPI yet, so install it from this repository:
-
 ```bash
-uv tool install "git+https://github.com/zippergen-io/zippergen.git"
+uv tool install zippergen
 ```
 
 Or with pipx, or into a virtual environment:
 
 ```bash
-pipx install "git+https://github.com/zippergen-io/zippergen.git"
-python3 -m venv .venv && .venv/bin/pip install "git+https://github.com/zippergen-io/zippergen.git"
+pipx install zippergen
+python3 -m venv .venv && .venv/bin/pip install zippergen
 ```
 
-The installation resolves to the repository's current commit. To update,
-rerun the same command with `--refresh`, since Git sources are cached by
-resolved commit:
+To update an installation managed by uv:
 
 ```bash
-uv tool install --force --refresh "git+https://github.com/zippergen-io/zippergen.git"
+uv tool upgrade zippergen
 ```
 
 Gmail and Google Sheets need one extra:
 
 ```bash
-uv tool install "zippergen[google] @ git+https://github.com/zippergen-io/zippergen.git"
+uv tool install "zippergen[google]"
 ```
 
 ZipperGen needs Python 3.11 or newer. It has no other dependencies. It

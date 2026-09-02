@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0a3 — 2026-08-22
+## 0.1.0a3 — 2026-09-02
 
 This prerelease replaces the original example-oriented package with the
 project, configuration, durable-run, and managed-deployment surfaces described

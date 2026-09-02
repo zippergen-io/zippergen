@@ -25,46 +25,10 @@ def test_documented_python_examples_exist():
     assert not missing, "documented examples do not exist:\n" + "\n".join(missing)
 
 
-def test_no_document_tells_a_reader_to_install_from_pypi_yet():
-    """`pip install zippergen` fails: the package is not published.
-
-    It is the first command a reader runs, so it must work. Delete this test
-    when the name is on PyPI and the plain command is true again.
-    """
-
-    from pathlib import Path
+def test_public_install_instructions_use_pypi():
+    """Public instructions must not drift back to a mutable Git branch."""
 
     root = Path(__file__).resolve().parents[1]
-    sources = [root / "README.md", *(root / "docs").glob("*.tex")]
-    sources += list((root / "docs").glob("*.md"))
-    offenders = [
-        path.relative_to(root)
-        for path in sources
-        if "pip install zippergen" in path.read_text(encoding="utf-8")
-    ]
-
-    assert not offenders, (
-        "these tell a reader to install a package that is not published: "
-        + ", ".join(str(path) for path in offenders)
-    )
-
-
-def test_nothing_anywhere_tells_a_reader_to_install_from_pypi_yet():
-    """`pip install zippergen` fails: the package is not published.
-
-    The previous version of this test scanned selected documents for one
-    literal string, and missed both a runtime error message and an extras
-    command. It now scans every file a reader can reach, for the shape of the
-    instruction rather than one spelling of it.
-
-    Delete this test when the name is on PyPI.
-    """
-
-    import re
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[1]
-    pattern = re.compile(r"""pip install ["']?zippergen(\[[a-z]+\])?["']?(?!\s*[@\w./:-])""")
     searched = [
         *root.glob("*.md"),
         *(root / "docs").rglob("*.md"),
@@ -76,10 +40,16 @@ def test_nothing_anywhere_tells_a_reader_to_install_from_pypi_yet():
     offenders = [
         str(path.relative_to(root))
         for path in searched
-        if pattern.search(path.read_text(encoding="utf-8"))
+        if "git+https://github.com/zippergen-io/zippergen.git" in path.read_text(
+            encoding="utf-8"
+        )
     ]
 
     assert not offenders, (
-        "these tell a reader to install a package that is not published: "
+        "these still tell readers to install from the Git branch: "
         + ", ".join(offenders)
     )
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert "uv tool install zippergen" in readme
+    assert "pipx install zippergen" in readme
+    assert ".venv/bin/pip install zippergen" in readme

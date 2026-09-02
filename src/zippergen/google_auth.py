@@ -31,7 +31,7 @@ _GOOGLE_SCOPE_NAMES = {
 _GOOGLE_AUTHORIZATION_PREFIX = "zg-google-v1"
 
 
-INSTALL_SOURCE = "git+https://github.com/zippergen-io/zippergen.git"
+INSTALL_SOURCE = "zippergen"
 
 
 def install_command(*, extra: str | None = None) -> str:
@@ -43,7 +43,7 @@ def install_command(*, extra: str | None = None) -> str:
     ones nobody thinks to look for.
     """
 
-    target = f"zippergen[{extra}] @ {INSTALL_SOURCE}" if extra else INSTALL_SOURCE
+    target = f"{INSTALL_SOURCE}[{extra}]" if extra else INSTALL_SOURCE
     return f'uv tool install "{target}"'
 
 
