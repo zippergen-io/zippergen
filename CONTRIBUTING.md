@@ -8,7 +8,6 @@ not cover, namely how work is agreed and what a change has to pass.
 
 ## Working agreements
 
-- **Commit messages are one line**, and never mention the tool that wrote them.
 - **External contributions go through pull requests.** Open an issue before a
   substantial or compatibility-affecting change so the direction can be
   agreed before implementation.
