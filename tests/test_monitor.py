@@ -13,6 +13,21 @@ def make_monitor(name: str, lifelines: list[str], formula):
     return MonitorState(name, lifelines, subs)
 
 
+def wire_view(monitor, entries):
+    """Encode formula objects with the stable indexes used on messages."""
+    indexes = {
+        id(formula): index
+        for index, formula in enumerate(monitor.subformulas)
+    }
+    return {
+        lifeline: {
+            indexes[id(formula)]: value
+            for formula, value in values.items()
+        }
+        for lifeline, values in entries.items()
+    }
+
+
 # ---------------------------------------------------------------------------
 # Initial state
 # ---------------------------------------------------------------------------
@@ -70,7 +85,7 @@ def test_recv_merges_remote_vc():
     phi = atom(lambda env: True)
     m = make_monitor("B", ["A", "B"], phi)
     recv_vc = {"A": 3, "B": 0}
-    recv_view = {"A": {id(phi): True}, "B": {}}
+    recv_view = wire_view(m, {"A": {phi: True}, "B": {}})
     m.on_event("recv", {}, recv_vc=recv_vc, recv_view=recv_view)
     assert m.vc["A"] == 3
 
@@ -79,7 +94,7 @@ def test_recv_copies_view_when_ahead():
     phi = atom(lambda env: env.get("approved", False))
     m = make_monitor("B", ["A", "B"], phi)
     recv_vc = {"A": 1, "B": 0}
-    recv_view = {"A": {id(phi): True}, "B": {}}
+    recv_view = wire_view(m, {"A": {phi: True}, "B": {}})
     m.on_event("recv", {"approved": True}, recv_vc=recv_vc, recv_view=recv_view)
     assert m.view["A"][id(phi)] is True
 
@@ -92,7 +107,7 @@ def test_recv_does_not_overwrite_when_not_ahead():
     m.view["A"][id(phi)] = False
     # Incoming message is stale (A's vc=3 < our 5)
     recv_vc = {"A": 3, "B": 0}
-    recv_view = {"A": {id(phi): True}, "B": {}}
+    recv_view = wire_view(m, {"A": {phi: True}, "B": {}})
     m.on_event("recv", {}, recv_vc=recv_vc, recv_view=recv_view)
     # Our view should not be overwritten
     assert m.view["A"][id(phi)] is False
@@ -160,7 +175,7 @@ def test_ya_true_after_receiving_message_from_a():
     m = make_monitor("B", ["A", "B"], yaf)
     # Simulate B receiving a message from A where A's view of phi was True
     recv_vc = {"A": 1, "B": 0}
-    recv_view = {"A": {id(phi): True}, "B": {}}
+    recv_view = wire_view(m, {"A": {phi: True}, "B": {}})
     m.on_event("recv", {"approved": True}, recv_vc=recv_vc, recv_view=recv_view)
     # After recv: vc["A"]=1 > 0, view["A"][id(phi)]=True → Y_A(phi)=True
     assert m.view["B"][id(yaf)] is True
@@ -185,8 +200,41 @@ def test_snapshot_view_is_deep_copy():
     m = make_monitor("A", ["A"], phi)
     m.on_event("act", {})
     snap = m.snapshot_view()
-    snap["A"][id(phi)] = False
+    assert snap == {"A": {0: True}}
+    snap["A"][0] = False
     assert m.view["A"][id(phi)] is True
+
+
+def test_transmitted_view_uses_indexes_across_distinct_formula_objects():
+    sent_atom = atom(lambda env: env.get("ok", False))
+    sent_guard = At["A"](sent_atom)
+    received_atom = atom(lambda env: env.get("ok", False))
+    received_guard = At["A"](received_atom)
+    sender = make_monitor("A", ["A", "B"], sent_guard)
+    receiver = make_monitor("B", ["A", "B"], received_guard)
+
+    sender.on_event("act", {"ok": True})
+    receiver.on_event(
+        "recv",
+        {},
+        recv_vc=sender.snapshot_vc(),
+        recv_view=sender.snapshot_view(),
+    )
+
+    assert receiver.guard_value(received_guard) is True
+
+
+def test_receive_rejects_invalid_formula_index():
+    phi = atom(lambda env: True)
+    monitor = make_monitor("B", ["A", "B"], phi)
+
+    with pytest.raises(RuntimeError, match="invalid formula index"):
+        monitor.on_event(
+            "recv",
+            {},
+            recv_vc={"A": 1, "B": 0},
+            recv_view={"A": {1: True}, "B": {}},
+        )
 
 
 def test_monitor_state_roundtrip_uses_stable_formula_indexes():
@@ -219,7 +267,7 @@ def test_monitor_state_refuses_changed_atom_semantics_with_same_label():
 
 
 def test_monitor_state_preserves_tuple_field_values():
-    guard = atom(lambda env: True, version="always-v1")
+    guard = atom(lambda env: True, version="always-v1", fields={"coordinates"})
     first = make_monitor("A", ["A"], guard)
     first.on_event("act", {"coordinates": (1, [2, 3])})
 
@@ -231,7 +279,7 @@ def test_monitor_state_preserves_tuple_field_values():
 
 
 def test_field_view_snapshots_mutable_local_values():
-    phi = atom(lambda env: True)
+    phi = atom(lambda env: True, fields={"items"})
     m = make_monitor("A", ["A"], phi)
     env = {"items": ["old"]}
 
@@ -245,7 +293,7 @@ def test_field_view_snapshots_mutable_local_values():
 
 
 def test_recv_deep_copies_incoming_field_view_when_ahead():
-    phi = atom(lambda env: True)
+    phi = atom(lambda env: True, fields={"items"})
     m = make_monitor("B", ["A", "B"], phi)
     recv_field_view = {"A": {"items": ["remote"]}, "B": {}}
 
@@ -260,6 +308,27 @@ def test_recv_deep_copies_incoming_field_view_when_ahead():
     recv_field_view["A"]["items"].append("mutated")
 
     assert m.field_view["A"]["items"] == ["remote"]
+
+
+def test_field_view_keeps_only_fields_used_by_cross_lifeline_terms():
+    guard = At["A"].version == Here.version
+    m = make_monitor("A", ["A", "B"], guard)
+
+    m.on_event("act", {"version": "v1", "private_notes": "large"})
+
+    assert m.snapshot_field_view()["A"] == {"version": "v1"}
+
+
+def test_low_level_context_atom_without_field_declaration_keeps_all_fields():
+    guard = atom(lambda env, ctx: bool(ctx.field_view["A"]["needed"]))
+    m = make_monitor("A", ["A"], guard)
+
+    m.on_event("act", {"needed": True, "other": "preserved"})
+
+    assert m.snapshot_field_view()["A"] == {
+        "needed": True,
+        "other": "preserved",
+    }
 
 
 def test_field_term_formula_compares_latest_visible_values():
@@ -385,6 +454,29 @@ def test_since_is_non_strict_and_local():
     assert m.view["A"][id(f)] is False
 
 
+def test_pending_delimits_sequential_candidate_episodes():
+    not_failed = atom(lambda env: env.get("status") != "failed")
+    not_pending = atom(lambda env: env.get("status") != "pending")
+    passed = atom(lambda env: env.get("status") == "passed")
+    guard = since(not_failed & not_pending, passed)
+    monitor = make_monitor("TestRunner", ["TestRunner"], guard)
+
+    history = [
+        ("A", "pending", False),
+        ("A", "checking", False),
+        ("A", "passed", True),
+        ("A", "checking", True),
+        ("B", "pending", False),
+        ("B", "checking", False),
+        ("B", "passed", True),
+        ("B", "failed", False),
+        ("B", "checking", False),
+    ]
+    for candidate, status, expected in history:
+        monitor.on_event("act", {"candidate": candidate, "status": status})
+        assert monitor.guard_value(guard) is expected
+
+
 def test_past_is_non_strict_on_same_lifeline():
     phi = atom(lambda env: env.get("x", False))
     f = P(phi)
@@ -403,14 +495,14 @@ def test_past_sees_remote_causal_history_after_receive():
     m = make_monitor("B", ["A", "B"], f)
 
     recv_vc = {"A": 1, "B": 0}
-    recv_view = {
+    recv_view = wire_view(m, {
         "A": {
-            id(phi): True,
-            id(f.witness.left): True,
-            id(f.witness): True,
+            phi: True,
+            f.witness.left: True,
+            f.witness: True,
         },
         "B": {},
-    }
+    })
     m.on_event("recv", {}, recv_vc=recv_vc, recv_view=recv_view)
     assert m.view["B"][id(f)] is True
 

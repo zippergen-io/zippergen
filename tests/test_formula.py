@@ -23,6 +23,14 @@ def test_atom_creates_atomic_formula():
     assert f.fn is fn
 
 
+def test_atom_records_whether_event_context_is_accepted():
+    local = atom(lambda env: True)
+    contextual = atom(lambda env, event: True)
+
+    assert local.accepts_event_context is False
+    assert contextual.accepts_event_context is True
+
+
 def test_atom_auto_src_from_name():
     def my_pred(env): return True
     f = atom(my_pred)
@@ -165,6 +173,26 @@ def test_true_false_create_const_formulas():
     assert isinstance(true(), ConstFormula)
     assert true().value is True
     assert false().value is False
+
+
+def test_field_comparison_records_remote_field_names():
+    formula = At["Reviewer"].candidate == Here.candidate
+
+    assert formula.fields == frozenset({"candidate"})
+
+
+def test_local_field_comparison_records_no_remote_field_names():
+    formula = Here.left == Here.right
+
+    assert formula.fields == frozenset()
+
+
+def test_declared_atom_fields_affect_durable_identity():
+    predicate = lambda env, ctx: True
+    left = atom(predicate, version="same-v1", fields={"left"})
+    right = atom(predicate, version="same-v1", fields={"right"})
+
+    assert formula_fingerprint(left) != formula_fingerprint(right)
 
 
 # --- Subformulas ---

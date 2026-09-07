@@ -20,14 +20,16 @@ Supported operators:
 Field terms — compare latest visible field values directly:
     At["A"].x == Here.y
 
-The lower-level atom() escape hatch can still inspect the full event context:
-    atom(lambda env, ctx: ctx.field_view["A"]["x"] == env["y"])
+The lower-level atom() escape hatch can still inspect the event context. Give
+remote fields explicitly so the monitor can propagate only those values:
+    atom(lambda env, ctx: ctx.field_view["A"]["x"] == env["y"], fields={"x"})
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 import hashlib
+import inspect
 import json
 import operator
 from typing import Any, TypeAlias
@@ -146,6 +148,11 @@ class FieldTerm:
 
     def _compare(self, other: object, symbol: str, op: Callable[[Any, Any], bool]) -> AtomicFormula:
         src = f"{_term_src(self)} {symbol} {_term_src(other)}"
+        fields = frozenset(
+            term.field_name
+            for term in (self, other)
+            if isinstance(term, FieldTerm) and term.lifeline_name is not None
+        )
 
         def predicate(env, ctx) -> bool:
             left = _eval_term(self, env, ctx)
@@ -154,7 +161,7 @@ class FieldTerm:
                 return False
             return op(left, right)
 
-        return atom(predicate, src=src, version=f"field:{src}")
+        return atom(predicate, src=src, version=f"field:{src}", fields=fields)
 
     def __eq__(self, other: object) -> AtomicFormula:  # type: ignore[override]
         return self._compare(other, "==", operator.eq)
@@ -205,6 +212,8 @@ class AtomicFormula(Formula):
     fn: Callable[..., bool]
     src: str = ""
     version: str = ""
+    fields: frozenset[str] | None = None
+    accepts_event_context: bool = False
 
     # Use object identity so that two separately-created atom() calls are
     # distinct subformulas even when wrapping the same function.
@@ -309,6 +318,7 @@ def atom(
     src: str = "",
     *,
     version: str = "",
+    fields: Iterable[str] | None = None,
 ) -> AtomicFormula:
     """Wrap a Python callable as an atomic CPL predicate.
 
@@ -317,12 +327,35 @@ def atom(
           fn.__name__.
     version : stable semantic identity required when a CPL monitor is stored
               durably. Change it whenever the predicate's meaning changes.
+    fields : names read remotely through the event context. For a low-level
+             two-argument predicate, omitting this preserves access to all
+             fields.
     """
     return AtomicFormula(
         fn=fn,
         src=src or getattr(fn, "__name__", ""),
         version=str(version),
+        fields=None if fields is None else frozenset(str(field) for field in fields),
+        accepts_event_context=_accepts_event_context(fn),
     )
+
+
+def _accepts_event_context(fn: Callable[..., bool]) -> bool:
+    """Determine once whether an atomic predicate accepts the event context."""
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    positional = 0
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if parameter.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }:
+            positional += 1
+    return positional >= 2
 
 
 def on(lifeline: object) -> OnFormula:
@@ -455,14 +488,17 @@ def _formula_shape(formula: AnyFormula) -> object:
     match formula:
         case ConstFormula(value=value):
             return ["const", value]
-        case AtomicFormula(version=version):
+        case AtomicFormula(version=version, fields=fields):
             if not version:
                 raise ValueError(
                     "A durable CPL atom needs a semantic version. Declare "
                     "atom(predicate, version='descriptive-v1') and change the "
                     "version whenever the predicate's meaning changes."
                 )
-            return ["atom", version]
+            shape: list[object] = ["atom", version]
+            if fields is not None:
+                shape.append(["fields", *sorted(fields)])
+            return shape
         case OnFormula(lifeline_name=name):
             return ["on", name]
         case YFormula(subformula=child):

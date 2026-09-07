@@ -28,7 +28,6 @@ Outgoing messages carry a vc/view snapshot:
 from __future__ import annotations
 
 import copy
-import inspect
 
 from zippergen.formula import (
     AnyFormula, EventContext,
@@ -42,14 +41,29 @@ from zippergen.value_codec import decode_value, encode_value
 __all__ = ["MonitorState"]
 
 
-def _copy_field_map(fields: dict) -> dict[str, object]:
+def _copy_field_map(
+    fields: dict,
+    selected: frozenset[str] | None = None,
+) -> dict[str, object]:
     """Copy one lifeline's field store as an event snapshot."""
-    return {str(name): copy.deepcopy(value) for name, value in fields.items()}
+    if selected is None:
+        return {str(name): copy.deepcopy(value) for name, value in fields.items()}
+    return {
+        name: copy.deepcopy(fields[name])
+        for name in selected
+        if name in fields
+    }
 
 
-def _copy_field_view(field_view: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
+def _copy_field_view(
+    field_view: dict[str, dict[str, object]],
+    selected: frozenset[str] | None = None,
+) -> dict[str, dict[str, object]]:
     """Copy the full field-view table, including mutable field values."""
-    return {lifeline: _copy_field_map(fields) for lifeline, fields in field_view.items()}
+    return {
+        lifeline: _copy_field_map(fields, selected)
+        for lifeline, fields in field_view.items()
+    }
 
 
 class MonitorState:
@@ -65,6 +79,26 @@ class MonitorState:
         self.lifelines = list(all_lifelines)
         self.subformulas = list(all_subformulas)  # bottom-up order (leaves first)
         self._formula_ids: set[int] = {id(phi) for phi in self.subformulas}
+        self._formula_ids_by_index: list[int] = [
+            id(phi) for phi in self.subformulas
+        ]
+        self._formula_indexes: dict[int, int] = {
+            formula_id: index
+            for index, formula_id in enumerate(self._formula_ids_by_index)
+        }
+        declared_fields: set[str] = set()
+        track_all_fields = False
+        for phi in self.subformulas:
+            if isinstance(phi, AtomicFormula):
+                if phi.fields is not None:
+                    declared_fields.update(phi.fields)
+                elif phi.accepts_event_context:
+                    # A low-level context predicate without a declaration may
+                    # inspect any remote field. Preserve the previous behavior.
+                    track_all_fields = True
+        self.tracked_fields: frozenset[str] | None = (
+            None if track_all_fields else frozenset(declared_fields)
+        )
 
         # vc[B] = number of events of B causally visible to self (inclusive, 1-based).
         self.vc: dict[str, int] = {b: 0 for b in all_lifelines}
@@ -72,7 +106,7 @@ class MonitorState:
         # view[B][id(phi)] = truth of phi at the latest event of B visible to self.
         self.view: dict[str, dict[int, bool]] = {b: {} for b in all_lifelines}
 
-        # field_view[B][x] = value of variable x at the latest event of B visible to self.
+        # field_view[B][x] = latest visible value of a selected remote field x.
         self.field_view: dict[str, dict[str, object]] = {b: {} for b in all_lifelines}
 
         # _val: computed values for the current event (cleared and refilled by on_event)
@@ -111,10 +145,19 @@ class MonitorState:
                 )
             for B in self.lifelines:
                 if recv_vc.get(B, 0) > self.vc[B]:
-                    for phi_id, val in recv_view.get(B, {}).items():
-                        self.view[B][phi_id] = val
+                    for formula_index, val in recv_view.get(B, {}).items():
+                        if type(formula_index) is not int or not (
+                            0 <= formula_index < len(self._formula_ids_by_index)
+                        ):
+                            raise RuntimeError(
+                                "Received CPL metadata contains an invalid formula index."
+                            )
+                        formula_id = self._formula_ids_by_index[formula_index]
+                        self.view[B][formula_id] = val
                     if recv_field_view and B in recv_field_view:
-                        self.field_view[B] = _copy_field_map(recv_field_view[B])
+                        self.field_view[B] = _copy_field_map(
+                            recv_field_view[B], self.tracked_fields
+                        )
             for B in self.lifelines:
                 self.vc[B] = max(self.vc[B], recv_vc.get(B, 0))
 
@@ -125,7 +168,7 @@ class MonitorState:
         self.vc[A] += 1
 
         # Snapshot current env into field_view[A] (implements field-term tracking).
-        self.field_view[A] = _copy_field_map(env)
+        self.field_view[A] = _copy_field_map(env, self.tracked_fields)
 
         # env is already post-effect (caller applies effect before calling on_event)
         event = EventContext(
@@ -134,7 +177,7 @@ class MonitorState:
             vc=dict(self.vc),
             message_vc=dict(recv_vc) if recv_vc is not None else None,
             message_view={b: dict(v) for b, v in recv_view.items()} if recv_view is not None else None,
-            field_view=_copy_field_view(self.field_view),
+            field_view=_copy_field_view(self.field_view, self.tracked_fields),
         )
 
         # --- Lines 19-21: evaluate subformulas in bottom-up order ---
@@ -167,8 +210,8 @@ class MonitorState:
             case ConstFormula(value=value):
                 return value
 
-            case AtomicFormula(fn=fn):
-                return bool(_call_atom(fn, env, event))
+            case AtomicFormula(fn=fn, accepts_event_context=accepts_context):
+                return bool(_call_atom(fn, accepts_context, env, event))
 
             case OnFormula(lifeline_name=B):
                 return A == B
@@ -238,20 +281,23 @@ class MonitorState:
         return dict(self.vc)
 
     def snapshot_view(self) -> dict[str, dict[int, bool]]:
-        """Deep copy of the current view table (one level of dicts)."""
-        return {b: dict(v) for b, v in self.view.items()}
+        """Copy the view using stable subformula indexes for transmission."""
+        return {
+            lifeline: {
+                self._formula_indexes[formula_id]: value
+                for formula_id, value in values.items()
+                if formula_id in self._formula_indexes
+            }
+            for lifeline, values in self.view.items()
+        }
 
     def snapshot_field_view(self) -> dict[str, dict[str, object]]:
-        """Deep copy of the current field-view table."""
-        return _copy_field_view(self.field_view)
+        """Deep copy of the selected field-view table."""
+        return _copy_field_view(self.field_view, self.tracked_fields)
 
     def snapshot_state(self) -> dict[str, object]:
         """Return JSON-safe bounded state for durable recovery."""
 
-        formula_indexes = {
-            id(formula): index
-            for index, formula in enumerate(self.subformulas)
-        }
         return {
             "version": 2,
             "name": self.name,
@@ -262,17 +308,17 @@ class MonitorState:
             "vc": dict(self.vc),
             "view": {
                 lifeline: {
-                    str(formula_indexes[formula_id]): bool(value)
+                    str(self._formula_indexes[formula_id]): bool(value)
                     for formula_id, value in values.items()
-                    if formula_id in formula_indexes
+                    if formula_id in self._formula_indexes
                 }
                 for lifeline, values in self.view.items()
             },
             "field_view": encode_value(self.snapshot_field_view()),
             "val": {
-                str(formula_indexes[formula_id]): bool(value)
+                str(self._formula_indexes[formula_id]): bool(value)
                 for formula_id, value in self._val.items()
-                if formula_id in formula_indexes
+                if formula_id in self._formula_indexes
             },
         }
 
@@ -338,7 +384,8 @@ class MonitorState:
             lifeline: _copy_field_map(
                 decoded_field_view.get(lifeline, {})
                 if isinstance(decoded_field_view.get(lifeline, {}), dict)
-                else {}
+                else {},
+                self.tracked_fields,
             )
             for lifeline in self.lifelines
         }
@@ -400,25 +447,13 @@ class _CtxProxy:
         return val
 
 
-def _call_atom(fn, env: dict, event: EventContext) -> bool:
+def _call_atom(
+    fn,
+    accepts_event_context: bool,
+    env: dict,
+    event: EventContext,
+) -> bool:
     proxy_env = _AttrProxy(env)
-    if _accepts_event_context(fn):
+    if accepts_event_context:
         return fn(proxy_env, _CtxProxy(event))
     return fn(proxy_env)
-
-
-def _accepts_event_context(fn) -> bool:
-    try:
-        sig = inspect.signature(fn)
-    except (TypeError, ValueError):
-        return False
-    positional = 0
-    for param in sig.parameters.values():
-        if param.kind is inspect.Parameter.VAR_POSITIONAL:
-            return True
-        if param.kind in {
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        }:
-            positional += 1
-    return positional >= 2

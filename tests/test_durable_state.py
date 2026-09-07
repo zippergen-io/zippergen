@@ -445,10 +445,16 @@ def test_the_causal_stamp_is_written_with_the_senders_own_state(tmp_path):
 
     sender_state = _state(store, "A")
     assert sender_state["monitor"] is not None
-    sent_clock = json.loads(stamp[0])["vc"]
+    sent_stamp = json.loads(stamp[0])
+    sent_clock = sent_stamp["vc"]
     assert sender_state["monitor"]["vc"]["A"] >= sent_clock["A"], (
         "the sender's own clock is at least as far along as what it stamped"
     )
+    assert {
+        formula_index
+        for values in sent_stamp["view"].values()
+        for formula_index in values
+    } <= {"0"}, "the wire view uses stable formula indexes"
 
 
 def test_a_crashed_sender_does_not_send_its_message_twice(tmp_path):
