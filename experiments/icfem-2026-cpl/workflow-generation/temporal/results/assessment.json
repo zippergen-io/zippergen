@@ -1,0 +1,31 @@
+{
+  "runs": [
+    {
+      "run": 1,
+      "valid": true,
+      "messages_match": true,
+      "three_status_updates": true,
+      "l3_guard": "if At[L0](since(Here.status != 'failed', Here.status == 'passed')):",
+      "histories_checked": 27,
+      "failures": []
+    },
+    {
+      "run": 2,
+      "valid": true,
+      "messages_match": true,
+      "three_status_updates": true,
+      "l3_guard": "if At[L0](since(Here.status != 'failed', Here.status == 'passed')):",
+      "histories_checked": 27,
+      "failures": []
+    },
+    {
+      "run": 3,
+      "valid": true,
+      "messages_match": true,
+      "three_status_updates": true,
+      "l3_guard": "if At[L0](since(Here.status != 'failed', Here.status == 'passed')):",
+      "histories_checked": 27,
+      "failures": []
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "runs": [
+    {
+      "run": 1,
+      "valid": true,
+      "messages_match": true,
+      "l3_owns_expected_guard": true,
+      "heads_result": "heads",
+      "tails_result": "tails"
+    },
+    {
+      "run": 2,
+      "valid": true,
+      "messages_match": true,
+      "l3_owns_expected_guard": true,
+      "heads_result": "heads",
+      "tails_result": "tails"
+    },
+    {
+      "run": 3,
+      "valid": true,
+      "messages_match": true,
+      "l3_owns_expected_guard": true,
+      "heads_result": "heads",
+      "tails_result": "tails"
+    }
+  ]
+}

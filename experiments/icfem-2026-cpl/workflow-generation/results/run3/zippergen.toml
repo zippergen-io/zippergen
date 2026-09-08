@@ -1,0 +1,4 @@
+# Visible, versionable ZipperGen project configuration.
+schema_version = 2
+name = "coin_chain"
+specification_file = "specification.md"

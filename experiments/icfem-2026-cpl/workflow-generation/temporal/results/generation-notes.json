@@ -1,0 +1,35 @@
+{
+  "skill_documents_temporal_operators": false,
+  "run1": {
+    "final_condition": "At[L0](since(Here.status != 'failed', Here.status == 'passed'))",
+    "source_consultation": [
+      "listed the installed zippergen public API",
+      "queried inspect.signature(since)",
+      "queried inspect.getdoc(since)"
+    ],
+    "self_correction": false
+  },
+  "run2": {
+    "final_condition": "At[L0](since(Here.status != 'failed', Here.status == 'passed'))",
+    "source_consultation": [
+      "listed the installed zippergen public API",
+      "queried inspect.signature(since)",
+      "queried inspect.getdoc(since)"
+    ],
+    "self_correction": false
+  },
+  "run3": {
+    "initial_constructor": "Since",
+    "constructor_correction": "validation reported that Since was unavailable and suggested since",
+    "initial_condition": "since(At[L0].status != 'failed', At[L0].status == 'passed')",
+    "initial_failed_accepting_histories": [
+      ["passed", "passed", "checking"],
+      ["passed", "checking", "checking"],
+      ["checking", "passed", "checking"],
+      ["failed", "passed", "checking"]
+    ],
+    "final_condition": "At[L0](since(Here.status != 'failed', Here.status == 'passed'))",
+    "self_correction": true,
+    "note": "The agent's generated exhaustive tests exposed the scoping error before the run ended."
+  }
+}

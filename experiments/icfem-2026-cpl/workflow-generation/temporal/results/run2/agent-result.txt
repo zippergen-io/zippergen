@@ -1,0 +1,9 @@
+Implemented `status_chain` with the required updates, token-only chain, and L3-owned temporal decision.
+
+- `zippergen validate --json`: valid.
+- All 81 runtime cases passed.
+- Added tests and README.
+
+The CLI example was blocked by sandbox permissions on ZipperGen’s execution-lock directory; Python runtime tests passed.
+
+Next command: `python -m unittest -v`

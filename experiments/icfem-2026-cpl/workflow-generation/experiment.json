@@ -1,0 +1,18 @@
+{
+  "date": "2026-09-08",
+  "coding_agent": "Codex CLI",
+  "cli_version": "0.153.4",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "low",
+  "zippergen_version": "0.1.0a3",
+  "zippergen_revision": "7a171946e5f3b415dcaf67947acb8eb4c62488f1",
+  "paper_base_revision": "e0eec0e787e24315fcb0a175d26a61859e28cb41",
+  "runs": 3,
+  "codex_options": ["--ephemeral", "--ignore-user-config", "--approve-for-me"],
+  "thread_ids": [
+    "01a08061-f87b-7a20-8669-dc9841c8c555",
+    "01a08063-e314-7631-b7f9-a21a39f94120",
+    "01a08063-e889-7131-a995-d48fb3753872"
+  ],
+  "prompt": "Implement specification.md as a complete ZipperGen project. First run zippergen skill and follow those instructions. Use no information outside this project. Run zippergen validate --json and correct any validation errors. Do not ask questions."
+}

@@ -62,7 +62,9 @@ examples/medium_program.py
 
 # Local scratch / non-project tooling
 .superpowers/
-experiments/
+experiments/*
+!experiments/icfem-2026-cpl/
+!experiments/icfem-2026-cpl/**
 uv.lock
 
 # Local design conversation (never committed)

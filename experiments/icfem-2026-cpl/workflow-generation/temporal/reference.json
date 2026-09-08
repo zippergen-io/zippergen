@@ -1,0 +1,18 @@
+{
+  "expected_condition": "At[L0](since(Here.status != 'failed', Here.status == 'passed'))",
+  "criteria": [
+    "the workflow validates and projects",
+    "L0 records the three supplied statuses in order as separate local events",
+    "the application messages form exactly L0 to L1 to L2 to L3",
+    "the application messages carry only token",
+    "the decision is owned by L3",
+    "the guard uses the temporal history of status without a summary variable",
+    "all 27 three-update histories follow the valid-pass policy",
+    "passed, checking, checking returns accept",
+    "passed, checking, failed returns reject",
+    "checking, checking, checking returns reject",
+    "passed, failed, checking returns reject",
+    "passed, failed, passed returns accept"
+  ],
+  "note": "Equivalent temporal conditions are accepted. This file is never copied into an agent project."
+}

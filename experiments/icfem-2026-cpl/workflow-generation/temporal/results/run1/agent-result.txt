@@ -1,0 +1,9 @@
+Implemented `status_chain` with L3’s causal-history decision and the exact token-only message chain.
+
+- `zippergen validate --json`: passed.
+- All 27 status combinations and message-architecture tests passed.
+- Added README and tests.
+
+CLI execution encountered a sandbox lock restriction; in-process execution passed.
+
+Next command: `python -m unittest -v`.

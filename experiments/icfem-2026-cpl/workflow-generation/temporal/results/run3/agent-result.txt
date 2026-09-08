@@ -1,0 +1,11 @@
+Implemented `status_chain` with L3’s temporal decision and the exact token-only message chain.
+
+- `zippergen validate --json`: valid.
+- All 27 status histories pass.
+- All four participant projections checked.
+- Added README and deterministic tests.
+
+Run:
+```sh
+zippergen run --input first_status=passed --input second_status=checking --input third_status=checking --input token=opaque
+```

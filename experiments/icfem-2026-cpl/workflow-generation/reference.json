@@ -1,0 +1,12 @@
+{
+  "expected_condition": "At[L0].outcome == 'heads'",
+  "criteria": [
+    "the workflow validates and projects",
+    "the application messages form exactly L0 to L1 to L2 to L3",
+    "the outcome is not included in an application-message payload",
+    "the decision is owned by L3",
+    "outcome heads returns heads",
+    "outcome tails returns tails"
+  ],
+  "note": "Equivalent conditions are accepted. The expected condition is never copied into an agent project."
+}
