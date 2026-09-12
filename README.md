@@ -7,16 +7,50 @@
   <a href="https://arxiv.org/abs/2604.17612"><img src="https://img.shields.io/badge/arXiv-2604.17612-b31b1b.svg" alt="arXiv"></a>
 </p>
 
-ZipperGen is a Python library for coordinating LLM agents, humans, and
-services.
+## Write one workflow. Run it as a service.
 
-You write one protocol, which says who sends what to whom, who calls a model,
-and who owns each decision. ZipperGen works out the program each participant
-runs, and runs them. For well-formed workflows covered by ZipperGen's formal
-model, those programs cannot deadlock, which is [proved
-formally](#formal-foundation).
+ZipperGen is a Python framework for workflows with LLM agents, people, and
+services. You write who does what and who makes each decision. ZipperGen
+derives the program for each participant and runs them.
+
+It also saves workflow state, keeps track of human approvals, and runs the
+workflow as a service on your machine or server. You use the same CLI to
+configure models and services, check the project, deploy it, and see what is
+happening.
 
 ---
+
+## From code to a running service
+
+Take an approval workflow. It waits for a message, asks a model to draft a
+reply, and asks you before sending it. After handling that message, it waits
+for the next one.
+
+You write the workflow and the actions it calls. Before deployment, configure
+the model and any external services it needs. Choose how you want to receive
+approval requests, for example through Telegram. Then check and deploy the
+project:
+
+```bash
+zg validate
+zg check --strict
+zg deploy
+```
+
+ZipperGen starts the service and saves its progress. Pending approvals stay
+available across a restart. From the same project directory, you can see what
+needs attention and how the service is running:
+
+```bash
+zg deploy tasks
+zg deploy status
+zg deploy logs
+```
+
+You can answer in the configured chat or use `zg deploy approve`. The
+[quick start](#quick-start) runs the approval workflow in your terminal. The
+[deployment guide](https://github.com/zippergen-io/zippergen/blob/main/docs/workflow-development-deployment-guide.pdf)
+covers setup and running it as a service on macOS or Linux.
 
 ## How you work with it
 
@@ -26,18 +60,7 @@ work with a coding agent such as Claude Code or Codex.
 
 No special editor or hosted environment is required. `zippergen skill` gives a
 coding agent its project instructions. You and the agent use the same CLI.
-
-```
-you ────────────────────────────┐
-                                │
-Claude Code / Codex ─ skill ────┤
-                                │
-                          zippergen CLI
-                    init · validate · run · deploy
-                                │
-                            ZipperGen
-                 protocol · projection · runtime
-```
+The workflow stays in Python files that you can read, review, and change.
 
 ## Install
 
@@ -356,15 +379,15 @@ jobs = Pool("jobs")
 
 Branch on whether the claim is `None`, process `claim["payload"]`, and
 acknowledge only after handling it. An empty result means no job is available
-now; it does not mean the workflow is finished. Use explicit messages when
+now. It does not mean the workflow is finished. Use explicit messages when
 submission must precede another participant's claim attempt.
 
-Each execution owns its pool in the managed SQLite store; no separate queue
+Each execution owns its pool in the managed SQLite store. No separate queue
 service is needed. Durable runs retain jobs and operation receipts across
 restart. Claims expire after 300 seconds by default, configurable with
 `Pool("jobs", lease_seconds=...)`, and are not renewed automatically. Released
-and expired jobs rejoin the back of the queue. FIFO governs job selection;
-worker fairness and completion order are unspecified. Processing may repeat,
+and expired jobs rejoin the back of the queue. Jobs are selected in FIFO order.
+Worker fairness and completion order are unspecified. Processing may repeat,
 so external work still needs its own idempotency protection.
 
 See the [two-worker example](https://github.com/zippergen-io/zippergen/blob/main/examples/work_pool/workflow.py)

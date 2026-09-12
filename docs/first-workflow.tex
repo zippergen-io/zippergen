@@ -117,7 +117,7 @@
 \title{\color{ZipperInk}\Huge\textbf{Your First ZipperGen Workflow}\\[5pt]
 \Large Draft a reply, ask a person, then send}
 \author{The ZipperGen Authors}
-\date{Tutorial edition: 31 August 2026}
+\date{Tutorial edition: 12 September 2026}
 
 \begin{document}
 
@@ -126,11 +126,12 @@
 \begin{abstract}
 You will build a small application that watches a mailbox, asks a language
 model to draft a reply to each message, and asks \emph{you} to approve it
-before anything is sent. It runs continuously as a service, and by the end of
-the tutorial it is running on a server. It is short enough to read in one go,
-but it already contains everything that makes ZipperGen worth
-using: two participants, a model call, an explicit human decision, a branch
-owned by the decider, and a loop that keeps the whole thing alive.
+before anything is sent. You will write the workflow in Python, configure its
+model and approval channel, and run it as a service on your machine or server.
+
+Along the way, you will stop while an approval is pending and resume from the
+saved state. Once the service is running, you will use the same CLI to see
+pending approvals, answer them, and inspect its status and logs.
 
 Development happens in an ordinary directory with ordinary command-line tools.
 You can write the workflow yourself or ask a coding agent such as Claude Code
@@ -707,7 +708,7 @@ ordinary stop.
 
 \section{Deploy it}
 
-The ordinary deployment command prepares, checks, and starts the service. For
+The deployment command prepares, checks, and starts the service. For
 this example it first asks for the mailbox directory. Enter the project
 directory you used above, such as \texttt{mailbox}. ZipperGen records its
 absolute path so the deployed service continues watching that directory from
@@ -717,8 +718,9 @@ outside its immutable source bundle:
 zg deploy
 \end{lstlisting}
 
-Every model, assistant CLI, and connector must pass a readiness probe before the
-service starts:
+Every model, assistant CLI, and connector must pass a readiness check before
+the service starts. Once it is running, you can inspect it from the same
+project directory:
 
 \begin{lstlisting}[style=shell]
 zg deploy logs
@@ -726,6 +728,24 @@ zg deploy status
 zg deploy inspect --watch
 zg deploy trace --follow
 \end{lstlisting}
+
+When the workflow asks for approval, you can answer in the configured Telegram
+chat or use the CLI. First list the pending tasks:
+
+\begin{lstlisting}[style=shell]
+zg deploy tasks
+\end{lstlisting}
+
+Find the request you want to answer and copy its task ID. Replace
+\texttt{TASK\_ID} below with that ID to approve the reply:
+
+\begin{lstlisting}[style=shell]
+zg deploy approve --task TASK_ID --yes
+\end{lstlisting}
+
+Use \texttt{--no} to decline it. The workflow then handles your answer and
+waits for the next message. Pending tasks are saved with the deployment, so
+you can still answer them after a service restart.
 
 \texttt{zg deploy status} distinguishes freshness of the ZipperGen runtime
 from freshness of the workflow source bundle. A stale warning means that the
