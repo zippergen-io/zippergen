@@ -455,6 +455,15 @@ zg deploy stop
 zg deploy       # rebuild and start the updated deployment
 ```
 
+Before applying an update, ZipperGen checks the saved workflow state against
+the new protocol. If their structure no longer matches, it keeps the previous
+deployment and saved state and explains how to proceed.
+
+The [deployment walkthrough](docs/reviews/2026-09-12-deployment-walkthrough.md)
+records a fresh installation, approvals, process recovery, and workflow updates
+on macOS with a simulated model provider. It also describes the limits of
+those checks.
+
 A workflow can ask a person on Telegram, read Gmail, or write to Google
 Sheets. The destination belongs in project configuration. Credentials stay in
 private state on the machine that runs ZipperGen. For Telegram:
