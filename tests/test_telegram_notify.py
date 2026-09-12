@@ -1350,6 +1350,27 @@ def test_a_corrupt_task_specification_is_not_reported_as_a_bad_answer(
         })
 
 
+def _approval_update(kind, *, token, message_id, update_id):
+    message = {"chat": {"id": 4242}, "from": {"id": 4242}}
+    if kind == "callback":
+        return {
+            "update_id": update_id,
+            "callback_query": {
+                "id": f"cb-{update_id}",
+                "data": f"zg:yes:{token}",
+                "from": {"id": 4242},
+                "message": {**message, "message_id": message_id},
+            },
+        }
+    if kind == "command":
+        message["text"] = f"/zg {token} yes"
+    else:
+        message["text"] = "yes"
+        message["reply_to_message"] = {"message_id": message_id}
+    return {"update_id": update_id, "message": message}
+
+
+@pytest.mark.parametrize("answer_kind", ["callback", "command", "reply"])
 @pytest.mark.parametrize(
     "allowed_user_id,description",
     [
@@ -1359,7 +1380,7 @@ def test_a_corrupt_task_specification_is_not_reported_as_a_bad_answer(
     ],
 )
 def test_a_foreign_token_stays_in_the_shared_inbox_under_every_actor_policy(
-    tmp_path, monkeypatch, allowed_user_id, description
+    tmp_path, monkeypatch, allowed_user_id, description, answer_kind
 ):
     """Ownership is established before any local policy is applied.
 
@@ -1374,15 +1395,12 @@ def test_a_foreign_token_stays_in_the_shared_inbox_under_every_actor_policy(
     store = tmp_path / f"mine-{allowed_user_id}.sqlite"
     _create_task(store, task_id="task-mine")
     fingerprint = f"shared-bot-{allowed_user_id}"
-    update = {
-        "update_id": 950,
-        "callback_query": {
-            "id": "cb-950",
-            "data": "zg:yes:token-issued-by-the-other-deployment",
-            "from": {"id": 4242},
-            "message": {"chat": {"id": 4242}, "message_id": 11},
-        },
-    }
+    update = _approval_update(
+        answer_kind,
+        token="token-issued-by-the-other-deployment",
+        message_id=11,
+        update_id=950,
+    )
     notifier = TelegramDeploymentNotifier(
         str(store),
         FakeTelegramClient([]),
@@ -1415,8 +1433,9 @@ def test_a_foreign_token_stays_in_the_shared_inbox_under_every_actor_policy(
         inbox.close()
 
 
+@pytest.mark.parametrize("answer_kind", ["callback", "command", "reply"])
 def test_a_token_this_deployment_owns_still_obeys_its_actor_policy(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, answer_kind
 ):
     """Ownership first does not weaken the policy -- it only orders the two."""
 
@@ -1443,15 +1462,9 @@ def test_a_token_this_deployment_owns_still_obeys_its_actor_policy(
         "callback_data"
     ].split(":", 2)[2]
 
-    update = {
-        "update_id": 951,
-        "callback_query": {
-            "id": "cb-951",
-            "data": f"zg:yes:{token}",
-            "from": {"id": 4242},
-            "message": {"chat": {"id": 4242}, "message_id": 12},
-        },
-    }
+    update = _approval_update(
+        answer_kind, token=token, message_id=1, update_id=951
+    )
     assert notifier.process_update(update) == SETTLED
 
     conn = open_store(str(store))

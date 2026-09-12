@@ -521,8 +521,6 @@ class TelegramNotifier:
         chat = message.get("chat") or {}
         if not self._chat_matches(chat.get("id")):
             return NOT_MINE
-        if not self._actor_matches(message.get("from")):
-            return SETTLED
         text = str(message.get("text") or "")
         parsed = parse_text_response(text)
         if parsed is None:
@@ -551,6 +549,13 @@ class TelegramNotifier:
         if parsed is None:
             return NOT_MINE
         token, value = parsed
+        # As with buttons, establish ownership before applying this route's
+        # actor policy. Settling a foreign answer would remove it from the
+        # shared inbox before its owning deployment can receive it.
+        if not self._owns_token(token):
+            return NOT_MINE
+        if not self._actor_matches(message.get("from")):
+            return SETTLED
         try:
             conn = open_store(self.store_path)
             try:

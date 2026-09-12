@@ -1,4 +1,5 @@
 import subprocess
+import venv
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,40 @@ def test_managed_environment_uses_an_immutable_generation(
         "never recorded as the previous one"
     )
     assert not list(managed.parent.glob(".*-building-*"))
+
+
+def test_managed_environment_console_script_survives_publication(tmp_path, monkeypatch):
+    """Installers bind console scripts to the environment's absolute path."""
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "zippergen.deployment_environment.shutil.which",
+        lambda name: "/tools/uv" if name == "uv" else None,
+    )
+    run_process = subprocess.run
+
+    def install_locally(arguments, *, check):
+        if arguments[1] == "venv":
+            venv.EnvBuilder(with_pip=False).create(arguments[-1])
+        else:
+            python = Path(arguments[arguments.index("--python") + 1])
+            script = python.parent / "example-command"
+            script.write_text(f"#!{python}\nprint('command works')\n")
+            script.chmod(0o700)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr(
+        "zippergen.deployment_environment.subprocess.run", install_locally
+    )
+    profile: dict[str, object] = {"name": "console-script"}
+    update = _prepare_deployment_environment(
+        profile, DeploymentSpec(), skip_install=False, defer_cleanup=True,
+    )
+    assert update is not None
+    command = update.environment / "bin" / "example-command"
+    for _stage in ("candidate", "published"):
+        result = run_process([str(command)], capture_output=True, text=True, check=True)
+        assert result.stdout.strip() == "command works"
+        update.commit()
 
 
 def test_failed_ensurepip_keeps_the_previous_environment_and_has_guidance(

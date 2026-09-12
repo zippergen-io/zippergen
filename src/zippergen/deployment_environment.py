@@ -18,7 +18,6 @@ from zippergen.deployment import DeploymentSpec
 from zippergen.deployment_platform import (
     deployment_bundles_dir,
     deployment_environment_releases_dir,
-    slug,
 )
 from zippergen.syntax import Workflow
 from zippergen.validation import assistant_actions
@@ -521,21 +520,23 @@ def prepare_deployment_environment(
         f"{time.strftime('%Y%m%d-%H%M%S')}-"
         f"{time.time_ns() % 1_000_000_000:09d}"
     )
-    environment_dir = releases_dir / version
-    build_dir = Path(
+    # Virtual environments contain absolute interpreter paths in installed
+    # scripts. Build at the final generation path and never rename it. The
+    # active profile still selects the previous generation until publication.
+    environment_dir = Path(
         tempfile.mkdtemp(
-            prefix=f".{slug(name)}-building-",
+            prefix=f"{version}-",
             dir=releases_dir,
         )
     )
-    build_python = _deployment_python_path(build_dir)
+    build_python = _deployment_python_path(environment_dir)
     uv = shutil.which("uv")
     phase = "creating the environment"
     print(f"Creating managed Python environment for {name}...")
     try:
         if uv is not None:
             subprocess.run(
-                [uv, "venv", "--python", sys.executable, str(build_dir)],
+                [uv, "venv", "--python", sys.executable, str(environment_dir)],
                 check=True,
             )
             install = [
@@ -550,7 +551,7 @@ def prepare_deployment_environment(
                 *requirements,
             ]
         else:
-            venv.EnvBuilder(with_pip=True).create(build_dir)
+            venv.EnvBuilder(with_pip=True).create(environment_dir)
             install = [
                 str(build_python),
                 "-m",
@@ -563,7 +564,7 @@ def prepare_deployment_environment(
         print("Installing deployment dependencies...")
         subprocess.run(install, check=True)
     except subprocess.CalledProcessError as exc:
-        shutil.rmtree(build_dir, ignore_errors=True)
+        shutil.rmtree(environment_dir, ignore_errors=True)
         outcome = (
             f"signal {-exc.returncode}"
             if exc.returncode < 0
@@ -581,29 +582,21 @@ def prepare_deployment_environment(
             "left unchanged."
         ) from None
     except (OSError, subprocess.SubprocessError) as exc:
-        shutil.rmtree(build_dir, ignore_errors=True)
+        shutil.rmtree(environment_dir, ignore_errors=True)
         raise SystemExit(
             f"Managed environment failed while {phase}: {exc}. The previous "
             "deployment environment, if any, was left unchanged."
         ) from None
     except KeyboardInterrupt:
-        shutil.rmtree(build_dir, ignore_errors=True)
+        shutil.rmtree(environment_dir, ignore_errors=True)
         raise
     except Exception as exc:
-        shutil.rmtree(build_dir, ignore_errors=True)
+        shutil.rmtree(environment_dir, ignore_errors=True)
         raise SystemExit(
             f"Managed environment failed while {phase}: {exc}. The previous "
             "deployment environment, if any, was left unchanged."
         ) from None
 
-    try:
-        os.replace(build_dir, environment_dir)
-    except OSError as exc:
-        shutil.rmtree(build_dir, ignore_errors=True)
-        raise SystemExit(
-            "Managed environment was built but could not publish candidate "
-            f"{environment_dir}: {exc}. The previous environment is unchanged."
-        ) from None
     # The generation this one replaces, and only when ZipperGen owns it: a
     # first deployment has none, and a path outside the managed root belongs
     # to someone else and is never removed.

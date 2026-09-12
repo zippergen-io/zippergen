@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- A new durable run now checks its required environment and credentials before
+  discarding the previous run. Missing configuration leaves the previous run
+  record and store intact.
+- Telegram text approvals now check task ownership before applying the local
+  approver policy. Deployments sharing a bot and chat no longer consume text
+  approvals addressed to another deployment.
+- SQLite worker startup failures now stop the supervisor and report the
+  original error. Failed store initialization also closes its connection.
+- Managed Python environments are built at their final generation path, so
+  installed command-line scripts remain usable after deployment publication.
+- Generated systemd units now quote executable paths and escape literal
+  percent signs in paths. Environment substitution is disabled for the
+  executable command.
 - Added execution-local FIFO work pools: `Pool("jobs")` provides `put`,
   nonblocking `try_claim`, `ack`, and `release` effect actions. Stable operation
   receipts survive recovery, claims have fixed leases, and stale acknowledgements

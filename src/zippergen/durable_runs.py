@@ -644,6 +644,7 @@ def _run_durable_in_project(
 
         secret_input_func = getpass.getpass
 
+    record: dict[str, Any] | None = None
     if resume:
         selected_run_id = workspace.current_run_id
         if not selected_run_id:
@@ -744,6 +745,30 @@ def _run_durable_in_project(
             else:
                 renderer.status("warning", notice)
         run_options = dict(options or {})
+
+    environment = collect_development_environment(
+        module,
+        workspace,
+        llm=selected_llm,
+        llms=selected_llms,
+        inputs=inputs,
+        options=run_options,
+        interactive=interactive,
+        input_func=input_func,
+        secret_input_func=secret_input_func,
+        output_func=output_func,
+        renderer=renderer,
+    )
+    provider_environment = workspace.development_provider_environment(
+        selected_llm_specs(selected_llm, selected_llms)
+    )
+    provider_environment.update(environment)
+    provider_environment.update(connector_environment or {})
+    environment = provider_environment
+
+    # Resolve required configuration before discarding the previous run. A
+    # missing credential or a cancelled prompt must leave that state intact.
+    if record is None:
         previous = workspace.current_run()
         if previous is not None:
             try:
@@ -769,30 +794,10 @@ def _run_durable_in_project(
             options=run_options,
             connectors=connector_snapshot,
         )
-        selected_run_id = str(record["run_id"])
         if renderer is None:
-            output_func(f"Run {selected_run_id}")
+            output_func(f"Run {record['run_id']}")
 
-    environment = collect_development_environment(
-        module,
-        workspace,
-        llm=selected_llm,
-        llms=selected_llms,
-        inputs=inputs,
-        options=run_options,
-        interactive=interactive,
-        input_func=input_func,
-        secret_input_func=secret_input_func,
-        output_func=output_func,
-        renderer=renderer,
-    )
-    provider_environment = workspace.development_provider_environment(
-        selected_llm_specs(selected_llm, selected_llms)
-    )
-    provider_environment.update(environment)
-    provider_environment.update(connector_environment or {})
-    environment = provider_environment
-
+    selected_run_id = str(record["run_id"])
     store_path = str(record["store"])
     if history_keep is not None:
         # A storage setting, not workflow configuration: it changes how much of

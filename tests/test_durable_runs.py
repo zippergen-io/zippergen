@@ -363,6 +363,34 @@ def test_starting_a_new_durable_run_discards_the_previous_one(tmp_path):
     assert list((workspace.home / "trash" / "runs").iterdir()) == []
 
 
+def test_missing_credential_keeps_the_previous_durable_run(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "secret_workflow.py").write_text(SECRET_WORKFLOW_SOURCE)
+    workspace = Workspace(root, home=tmp_path / "home")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    first = run_durable(
+        workspace, workflow_spec="secret_workflow.py:secret_demo",
+        provided_inputs={"value": "first"}, llm="mock", interactive=False,
+        output_func=lambda _line: None,
+    )
+    record_path = workspace.run_path(first["run_id"])
+    store_path = Path(first["store"])
+    record_before = record_path.read_bytes()
+    store_before = store_path.read_bytes()
+
+    with pytest.raises(SystemExit, match="api_key.*required"):
+        run_durable(
+            workspace, workflow_spec="secret_workflow.py:secret_demo",
+            provided_inputs={"value": "second"}, llm="openai:test",
+            interactive=False, output_func=lambda _line: None,
+        )
+
+    assert workspace.current_run_id == first["run_id"]
+    assert record_path.read_bytes() == record_before
+    assert store_path.read_bytes() == store_before
+
+
 def test_starting_a_new_durable_run_never_discards_an_active_one(tmp_path):
     workspace = Workspace(_repository_root(), home=tmp_path / "home")
     active = workspace.new_run(

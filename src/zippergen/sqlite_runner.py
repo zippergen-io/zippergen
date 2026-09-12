@@ -174,8 +174,9 @@ class LocalSupervisor:
             local_stmt = local_programs[lifeline.name]
 
             def target() -> None:
-                conn = open_store(self.store_path)
+                conn = None
                 try:
+                    conn = open_store(self.store_path)
                     runner = RoleRunner(
                         conn,
                         lifeline.name,
@@ -195,7 +196,8 @@ class LocalSupervisor:
                     result_boxes[lifeline.name] = exc
                     self.stop.set()
                 finally:
-                    conn.close()
+                    if conn is not None:
+                        conn.close()
 
             return target
 

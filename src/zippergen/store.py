@@ -205,59 +205,63 @@ def open_store(path: str) -> sqlite3.Connection:
         check_same_thread=False,
         timeout=5.0,
     )
-    conn.execute("PRAGMA busy_timeout=5000")
-
-    # Read the version before changing anything about the file. Switching to
-    # WAL below is a persistent property, so an installation that merely looked
-    # at a store written by a newer ZipperGen would leave it permanently
-    # altered -- and an installation cannot acquire that restraint later, only
-    # ship with it.
-    _identify_store(conn)
-    if store_path is not None:
-        store_path.chmod(0o600)
-
-    # Switching to WAL takes a lock upgrade that SQLite deliberately does not run
-    # the busy handler for, so two processes opening a fresh file together can see
-    # "database is locked" here regardless of busy_timeout. WAL is a persistent
-    # file property, so retrying is always safe.
-    for attempt in range(50):
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            break
-        except sqlite3.OperationalError as exc:
-            if "database is locked" not in str(exc) or attempt == 49:
-                raise
-            time.sleep(0.05)
-
-    # State the durability contract rather than inheriting a compile-time default.
-    conn.execute("PRAGMA synchronous=FULL")
-
-    # Schema claiming is serialized. Without this short transaction, a second
-    # role opening a brand-new store can observe ``store_meta`` after its table
-    # is created but before the version row is written and misdiagnose a
-    # half-initialized current store as incompatible.
-    conn.execute("BEGIN IMMEDIATE")
     try:
-        _reject_replay_era_store(conn)
-        _check_store_schema(conn)
-        conn.execute("COMMIT")
+        conn.execute("PRAGMA busy_timeout=5000")
+
+        # Read the version before changing anything about the file. Switching to
+        # WAL below is a persistent property, so an installation that merely looked
+        # at a store written by a newer ZipperGen would leave it permanently
+        # altered -- and an installation cannot acquire that restraint later, only
+        # ship with it.
+        _identify_store(conn)
+        if store_path is not None:
+            store_path.chmod(0o600)
+
+        # Switching to WAL takes a lock upgrade that SQLite deliberately does not run
+        # the busy handler for, so two processes opening a fresh file together can see
+        # "database is locked" here regardless of busy_timeout. WAL is a persistent
+        # file property, so retrying is always safe.
+        for attempt in range(50):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc) or attempt == 49:
+                    raise
+                time.sleep(0.05)
+
+        # State the durability contract rather than inheriting a compile-time default.
+        conn.execute("PRAGMA synchronous=FULL")
+
+        # Schema claiming is serialized. Without this short transaction, a second
+        # role opening a brand-new store can observe ``store_meta`` after its table
+        # is created but before the version row is written and misdiagnose a
+        # half-initialized current store as incompatible.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _reject_replay_era_store(conn)
+            _check_store_schema(conn)
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.executescript(SCHEMA)
+        conn.execute(
+            "INSERT INTO store_meta(key,value) VALUES('schema_version',?) "
+            "ON CONFLICT(key) DO NOTHING",
+            (str(SCHEMA_VERSION),),
+        )
+        if path != ":memory:" and not path.startswith("file:"):
+            for family in (
+                Path(connection_path),
+                Path(f"{connection_path}-wal"),
+                Path(f"{connection_path}-shm"),
+            ):
+                if family.exists():
+                    family.chmod(0o600)
     except BaseException:
-        conn.execute("ROLLBACK")
+        conn.close()
         raise
-    conn.executescript(SCHEMA)
-    conn.execute(
-        "INSERT INTO store_meta(key,value) VALUES('schema_version',?) "
-        "ON CONFLICT(key) DO NOTHING",
-        (str(SCHEMA_VERSION),),
-    )
-    if path != ":memory:" and not path.startswith("file:"):
-        for family in (
-            Path(connection_path),
-            Path(f"{connection_path}-wal"),
-            Path(f"{connection_path}-shm"),
-        ):
-            if family.exists():
-                family.chmod(0o600)
     return conn
 
 

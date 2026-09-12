@@ -1,6 +1,7 @@
 import json
 import os
 import plistlib
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -143,6 +144,34 @@ def test_deployment_artifacts_are_private_under_a_permissive_umask(
         (home / "deployments/io.zippergen.private.plist").read_bytes()
     )
     assert launchd["Umask"] == 0o077
+
+
+@pytest.mark.parametrize("directory", ["home with spaces", 'home "quoted" \\ literal', "home%h", "home${USER}"])
+def test_service_template_preserves_literal_paths(tmp_path, monkeypatch, directory):
+    home = tmp_path / directory
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    log = home / "logs" / "example.log"
+    profile = {
+        "name": "example",
+        "store": str(home / "runs" / "example.sqlite"),
+        "log": str(log),
+        "inputs": {},
+    }
+    _write_deployment_artifacts(profile)
+    service = (home / "deployments" / "zippergen-example.service").read_text()
+    fields = dict(line.split("=", 1) for line in service.splitlines() if "=" in line)
+    command = fields["ExecStart"]
+    # ':' disables systemd environment substitution. For these paths, its
+    # documented unquoting agrees with shlex. Percent specifiers are separate.
+    assert command.startswith(":"), "literal dollar signs must not be expanded"
+    arguments = shlex.split(command[1:])
+    assert arguments == [str(home / "deployments" / "example.sh").replace("%", "%%")]
+    assert fields["WorkingDirectory"] == str(home).replace("%", "%%")
+    assert fields["StandardOutput"] == "append:" + str(log).replace("%", "%%")
+    assert fields["StandardError"] == fields["StandardOutput"]
+    launchd = plistlib.loads((home / "deployments" / "io.zippergen.example.plist").read_bytes())
+    assert launchd["ProgramArguments"] == [str(home / "deployments" / "example.sh")]
+    assert launchd["WorkingDirectory"] == str(home)
 
 
 def test_permission_repair_secures_existing_managed_artifacts(

@@ -209,6 +209,44 @@ def test_run_sqlite_two_role_branch_matches_inprocess():
     assert run_sqlite(wf, [A, B], initial, timeout=10) == run(wf, [A, B], initial, timeout=10)
 
 
+def test_role_store_open_failure_stops_the_supervisor(tmp_path, monkeypatch):
+    """A failed worker startup must not leave its peer waiting forever."""
+    from zippergen import sqlite_runner
+
+    original_open = sqlite_runner.open_store
+    failure = sqlite3.OperationalError("injected worker store open failure")
+
+    def failing_open(path):
+        if threading.current_thread().name == "A":
+            raise failure
+        return original_open(path)
+
+    monkeypatch.setattr(sqlite_runner, "open_store", failing_open)
+    supervisor = LocalSupervisor(
+        _two_role_branch_workflow(), [A, B], {"A": {"x": 7}},
+        store_path=str(tmp_path / "startup-failure.sqlite"), timeout=0,
+    )
+    outcome = []
+
+    def supervise():
+        try:
+            supervisor.run()
+        except BaseException as exc:
+            outcome.append(exc)
+
+    thread = threading.Thread(target=supervise)
+    thread.start()
+    try:
+        thread.join(timeout=3)
+        assert not thread.is_alive(), "worker startup failure left the service waiting"
+        assert len(outcome) == 1
+        assert isinstance(outcome[0], RuntimeError)
+        assert outcome[0].__cause__ is failure
+    finally:
+        supervisor.stop.set()
+        thread.join(timeout=3)
+
+
 def test_run_sqlite_preserves_structured_json_across_messages_and_results(
     tmp_path,
 ):

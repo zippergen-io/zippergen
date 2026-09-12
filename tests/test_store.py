@@ -92,6 +92,28 @@ def test_open_store_refuses_an_unknown_current_state_schema(tmp_path):
         open_store(str(path))
 
 
+@pytest.mark.parametrize("stage", ["_identify_store", "_check_store_schema"])
+def test_failed_store_open_closes_its_connection(tmp_path, monkeypatch, stage):
+    from zippergen import store
+
+    connection = sqlite3.connect(str(tmp_path / "failed.sqlite"), isolation_level=None)
+    failure = StoreSchemaError("injected store setup failure")
+    monkeypatch.setattr(store.sqlite3, "connect", lambda *args, **kwargs: connection)
+
+    def fail(_connection):
+        raise failure
+
+    monkeypatch.setattr(store, stage, fail)
+    try:
+        with pytest.raises(StoreSchemaError) as raised:
+            open_store(str(tmp_path / "failed.sqlite"))
+        assert raised.value is failure
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+    finally:
+        connection.close()
+
+
 # ---------------------------------------------------------------------------
 # Role state
 # ---------------------------------------------------------------------------

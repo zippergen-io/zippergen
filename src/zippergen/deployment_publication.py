@@ -96,12 +96,32 @@ def _deployment_command(name: str, *, python_executable: str | None = None) -> s
     )
 
 
+def _systemd_path(path: str | Path, *, executable: bool = False) -> str:
+    """Keep a filesystem path literal in systemd's two parsing contexts."""
+
+    value = str(path)
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError(f"Service paths cannot contain control characters: {value!r}")
+    # Unit specifiers apply both to path settings and to ExecStart.
+    value = value.replace("%", "%%")
+    if executable:
+        # ExecStart additionally splits words and expands environment values.
+        # Its ':' prefix disables the latter. JSON's double-quoted string
+        # syntax supplies the escaping needed for quotes and backslashes here.
+        return ":" + json.dumps(value, ensure_ascii=False)
+    # WorkingDirectory and append: paths are whole values, not command words.
+    return value
+
+
 def _write_deployment_artifacts(profile: dict[str, object]) -> None:
     name = str(profile["name"])
     profile_path = _deployment_profile_path(name)
     script_path = _deployment_script_path(name)
     service_path = _deployment_service_path(name)
     launchd_path = _deployment_launchd_path(name)
+    systemd_home = _systemd_path(_zippergen_home())
+    systemd_command = _systemd_path(script_path, executable=True)
+    systemd_log = _systemd_path(str(profile["log"]))
     _prepare_managed_home(profile)
 
     stored_profile = dict(profile)
@@ -123,12 +143,12 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
         "[Service]\n"
         "Type=simple\n"
         "UMask=0077\n"
-        f"WorkingDirectory={_zippergen_home()}\n"
-        f"ExecStart={script_path}\n"
+        f"WorkingDirectory={systemd_home}\n"
+        f"ExecStart={systemd_command}\n"
         "Restart=on-failure\n"
         "RestartSec=10\n"
-        f"StandardOutput=append:{profile['log']}\n"
-        f"StandardError=append:{profile['log']}\n\n"
+        f"StandardOutput=append:{systemd_log}\n"
+        f"StandardError=append:{systemd_log}\n\n"
         "[Install]\n"
         "WantedBy=default.target\n"
     )
