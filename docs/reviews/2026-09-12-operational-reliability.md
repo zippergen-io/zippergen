@@ -154,6 +154,8 @@ distribution was built and checked separately afterwards.
 The review used temporary stores and fake provider responses. No real
 credentials, live approvals, or external business actions were used.
 
-A live Linux service-manager test and real provider credential refresh remain
-for the fresh-install release walkthrough. This review ran on macOS, and a
-Linux container daemon was unavailable.
+A [fresh-install walkthrough](2026-09-12-deployment-walkthrough.md) subsequently
+tested a real macOS launchd service with a simulated provider, approvals,
+process recovery, and workflow updates. Live Linux service execution and real
+provider credential refresh remain separate release checks. A Linux container
+daemon was unavailable on this machine.

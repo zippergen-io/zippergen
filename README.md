@@ -141,15 +141,18 @@ remains ordinary Python:
 
 ```python
 message = Var("message", str)
+item = Var("item", Json)
 draft = Var("draft", str)
 approved = Var("approved", bool)
 handled = Var("handled", int, default=0)
+processed = Var("processed", int, default=0)
 
 
 @workflow
 def email_approval() -> int:
-    Mailbox: message = next_unread_message()
-    while message @ Mailbox:
+    Mailbox: item = next_unread_message(processed)
+    while (item is not None) @ Mailbox:
+        Mailbox: message = message_text(item)
         Mailbox(message) >> Writer(message)
         Writer: draft = draft_reply(message)
         Writer(draft) >> Mailbox(draft)
@@ -158,9 +161,14 @@ def email_approval() -> int:
             Mailbox: handled = send_reply(draft, handled)
         else:
             Mailbox: handled = discard(handled)
-        Mailbox: message = next_unread_message()
+        Mailbox: processed = complete_message(item, processed)
+        Mailbox: item = next_unread_message(processed)
     return handled @ Mailbox
 ```
+
+The item keeps the filename and message together. The workflow marks that
+file as done after handling it. Reading an input leaves it available if the
+process stops before saving the read result.
 
 Check it and run it:
 
@@ -216,9 +224,10 @@ zg show --agent Mailbox
 ```python
 @role('Mailbox')
 def email_approval__Mailbox() -> int:
-    message = next_unread_message()
-    while message:
+    item = next_unread_message(processed)
+    while item is not None:
         send_decision('Writer', True)
+        message = message_text(item)
         send('Writer', message)
         draft = recv('Writer')
         approved = approve_reply(draft)
@@ -226,7 +235,8 @@ def email_approval__Mailbox() -> int:
             handled = send_reply(draft, handled)
         else:
             handled = discard(handled)
-        message = next_unread_message()
+        processed = complete_message(item, processed)
+        item = next_unread_message(processed)
     else:
         send_decision('Writer', False)
     return handled

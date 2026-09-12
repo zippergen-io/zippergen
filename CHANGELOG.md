@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The email approval tutorial now keeps each request available until it has
+  been handled and preserves its message budget across restart. Completion
+  recognizes a repeated call after a crash. This changes the example's
+  protocol. Finish saved executions with the previous example, or reset them
+  before deploying the updated version.
 - A new durable run now checks its required environment and credentials before
   discarding the previous run. Missing configuration leaves the previous run
   record and store intact.

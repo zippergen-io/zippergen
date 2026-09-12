@@ -291,8 +291,9 @@ The workflow is visible, readable Python:
 \begin{lstlisting}[language=Python]
 @workflow
 def email_approval() -> int:
-    Mailbox: message = next_unread_message()
-    while message @ Mailbox:
+    Mailbox: item = next_unread_message(processed)
+    while (item is not None) @ Mailbox:
+        Mailbox: message = message_text(item)
         Mailbox(message) >> Writer(message)
         Writer: draft = draft_reply(message)
         Writer(draft) >> Mailbox(draft)
@@ -301,7 +302,8 @@ def email_approval() -> int:
             Mailbox: handled = send_reply(draft, handled)
         else:
             Mailbox: handled = discard(handled)
-        Mailbox: message = next_unread_message()
+        Mailbox: processed = complete_message(item, processed)
+        Mailbox: item = next_unread_message(processed)
     return handled @ Mailbox
 \end{lstlisting}
 
@@ -322,19 +324,20 @@ stops and waits for a person.
 \texttt{if approved @ Mailbox} is a decision, and the \texttt{@ Mailbox} says who
 makes it. That annotation is the important one, and the next section shows why.
 
-\texttt{while message @ Mailbox} is a loop, owned the same way. The
+\texttt{while (item is not None) @ Mailbox} is a loop, owned the same way. The
 \texttt{Mailbox} decides each round whether there is another message to handle.
 \texttt{next\_unread\_message} waits until there is one, so in practice that
 decision is always yes and the workflow keeps running.
 
 \begin{notebox}{Mailbox handling stays local}
-Mailbox handling involves waiting for new mail, choosing between polling and
-blocking, and marking each message as handled. All of it sits behind
-\texttt{next\_unread\_message}, whose contract is one sentence: \emph{return the
-next message, waiting if there is none}. Here it takes the oldest
-\texttt{.txt} file from \texttt{mailbox/} and renames it \texttt{.done}, making
-each message one-shot even across a crash. The same coordination works with a
-real inbox.
+\texttt{next\_unread\_message} waits for the oldest \texttt{.txt} file in
+\texttt{mailbox/} and reads it without removing it. The \texttt{item} record
+keeps its filename and text together in durable workflow state.
+After approval or rejection, \texttt{complete\_message} renames that file
+\texttt{.done}. It recognizes a repeated completion after a crash.
+The \texttt{processed} count is durable too, so a restart preserves the
+optional message budget. Use one workflow per mailbox, give each input a unique
+filename, and leave it unchanged while it awaits review.
 \end{notebox}
 
 \section{Check it yourself}
@@ -400,9 +403,10 @@ zg show --agent Mailbox
 \begin{lstlisting}[language=Python]
 @role('Mailbox')
 def email_approval__Mailbox() -> int:
-    message = next_unread_message()
-    while message:
+    item = next_unread_message(processed)
+    while item is not None:
         send_decision('Writer', True)
+        message = message_text(item)
         send('Writer', message)
         draft = recv('Writer')
         approved = approve_reply(draft)
@@ -410,7 +414,8 @@ def email_approval__Mailbox() -> int:
             handled = send_reply(draft, handled)
         else:
             handled = discard(handled)
-        message = next_unread_message()
+        processed = complete_message(item, processed)
+        item = next_unread_message(processed)
     else:
         send_decision('Writer', False)
     return handled
@@ -484,8 +489,11 @@ The process now waits for the next message. Drop another file into
 \texttt{mailbox/} from a second terminal and it wakes up and handles that one
 too. Answering \texttt{n} takes the other branch.
 
-\texttt{mailbox/01.txt} is now \texttt{mailbox/01.done}. That rename is what
-stops a message being answered twice, including after a crash.
+\texttt{mailbox/01.txt} is now \texttt{mailbox/01.done}. This happens after
+handling, so a crash during the initial read cannot remove an unanswered
+request. The tutorial's send notification can still print twice if a crash
+happens before that action's result is saved. A real sending service also
+needs an idempotency key to recognize repeated calls.
 
 Stop it with \texttt{Ctrl-C}. For a run that ends by itself, add two new
 messages and give it a budget:
