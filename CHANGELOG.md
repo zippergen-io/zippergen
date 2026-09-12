@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Deployment readiness now checks saved workflow identity before publishing
+  an update or starting a service. An incompatible protocol is rejected with
+  reset/restore guidance; the previous deployment and durable state are kept.
+- HTTPS certificate verification failures in model calls now report a permanent
+  error with certificate-configuration guidance instead of retrying indefinitely
+  under `retries="forever"`. TLS verification remains enabled.
+- Default pytest discovery now targets the framework suite, matching CI, so
+  archived research programs with separate dependencies are not collected.
+
 ## 0.1.0a3 — 2026-09-02
 
 This prerelease replaces the original example-oriented package with the

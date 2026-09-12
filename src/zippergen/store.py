@@ -484,27 +484,23 @@ class WorkflowIdentityError(Exception):
     """Durable state belongs to a different program than the one being resumed."""
 
 
-def claim_workflow_identity(conn, workflow: str, fingerprint: str) -> None:
-    """Bind a store to one workflow and one projected program, or refuse it.
+def check_workflow_identity(conn, workflow: str, fingerprint: str) -> bool:
+    """Check compatibility without writing; return whether identity is claimed.
 
     Control state is child-index paths into the projected programs, so resuming
-    under changed code would silently mean something else. This is checked once,
-    explicitly, at startup rather than being inferred from a divergence later.
+    under changed code would silently mean something else. Deployment readiness
+    and runtime startup must enforce the same rule. Reading both values in one
+    statement also keeps inspection from observing half of a concurrent claim.
     """
 
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        stored_workflow = read_meta(conn, "workflow")
-        stored_fingerprint = read_meta(conn, "workflow_fingerprint")
-        if stored_workflow is None and stored_fingerprint is None:
-            write_meta(conn, "workflow", workflow)
-            write_meta(conn, "workflow_fingerprint", fingerprint)
-            conn.execute("COMMIT")
-            return
-        conn.execute("COMMIT")
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
+    identity = dict(conn.execute(
+        "SELECT key, value FROM store_meta "
+        "WHERE key IN ('workflow', 'workflow_fingerprint')"
+    ))
+    stored_workflow = identity.get("workflow")
+    stored_fingerprint = identity.get("workflow_fingerprint")
+    if stored_workflow is None and stored_fingerprint is None:
+        return False
     if stored_workflow != workflow:
         raise WorkflowIdentityError(
             f"This store holds durable state for workflow {stored_workflow!r}, "
@@ -517,6 +513,21 @@ def claim_workflow_identity(conn, workflow: str, fingerprint: str) -> None:
             "deployment with 'zg deploy reset' to start fresh, or restore the "
             "previous version of the workflow to resume it."
         )
+    return True
+
+
+def claim_workflow_identity(conn, workflow: str, fingerprint: str) -> None:
+    """Atomically bind a store to a workflow, or check its existing identity."""
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not check_workflow_identity(conn, workflow, fingerprint):
+            write_meta(conn, "workflow", workflow)
+            write_meta(conn, "workflow_fingerprint", fingerprint)
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
 
 # ---------------------------------------------------------------------------

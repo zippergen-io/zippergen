@@ -64,3 +64,4 @@ zippergen = ["skills/**/*.md", "skills/**/*.yaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+testpaths = ["tests"]

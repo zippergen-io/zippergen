@@ -541,6 +541,33 @@ def test_the_backend_makes_exactly_one_attempt(monkeypatch):
     assert calls["n"] == 1, "the backend must not retry behind the policy"
 
 
+@pytest.mark.parametrize("wrapped", [True, False])
+def test_certificate_failure_stops_even_with_unbounded_retries(monkeypatch, wrapped):
+    import ssl
+    from urllib import request as urlrequest
+    from urllib.error import URLError
+
+    from zippergen.backends import _json_request
+
+    error = ssl.SSLCertVerificationError(1, "certificate verify failed")
+    calls = []
+
+    def raising(req, timeout=None):
+        calls.append(req)
+        assert len(calls) == 1, "certificate failures require a fix, not retries"
+        raise URLError(error) if wrapped else error
+
+    monkeypatch.setattr("urllib.request.urlopen", raising)
+    with pytest.raises(LLMPermanentError, match="HTTPS certificate verification failed") as caught:
+        attempt_llm_action(
+            _action(retries=FOREVER),
+            lambda: _json_request(urlrequest.Request("https://example.invalid"), timeout=1),
+        )
+    assert "SSL_CERT_FILE" in str(caught.value)
+    assert "server certificate" in str(caught.value)
+    assert len(calls) == 1
+
+
 # ---------------------------------------------------------------------------
 # One namespace, and types that survive the fallback
 # ---------------------------------------------------------------------------

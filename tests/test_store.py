@@ -15,6 +15,7 @@ from zippergen.store import (
     RoleStateConflict,
     StoreSchemaError,
     WorkflowIdentityError,
+    check_workflow_identity,
     claim_workflow_identity,
     complete_human_task,
     ensure_human_task,
@@ -231,6 +232,36 @@ def test_identity_is_claimed_once_and_then_enforced(tmp_path):
             claim_workflow_identity(conn, "demo", "def")
     finally:
         conn.close()
+
+
+def test_identity_can_be_checked_without_claiming_or_changing_a_store(tmp_path):
+    from zippergen.store import open_store_readonly, read_meta
+
+    path = tmp_path / "identity.sqlite"
+    conn = open_store(str(path))
+    conn.close()
+    conn = open_store_readonly(path)
+    try:
+        assert check_workflow_identity(conn, "demo", "original") is False
+        assert read_meta(conn, "workflow") is None
+        assert read_meta(conn, "workflow_fingerprint") is None
+    finally:
+        conn.close()
+
+    conn = open_store(str(path))
+    claim_workflow_identity(conn, "demo", "original")
+    conn.close()
+    before = path.read_bytes()
+    conn = open_store_readonly(path)
+    try:
+        assert check_workflow_identity(conn, "demo", "original") is True
+        with pytest.raises(WorkflowIdentityError, match="workflow changed"):
+            check_workflow_identity(conn, "demo", "changed")
+        with pytest.raises(WorkflowIdentityError, match="not 'other'"):
+            check_workflow_identity(conn, "other", "original")
+    finally:
+        conn.close()
+    assert path.read_bytes() == before
 
 
 # ---------------------------------------------------------------------------

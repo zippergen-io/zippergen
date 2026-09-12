@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import ssl
 import threading
 import time
 from datetime import datetime
@@ -195,8 +196,19 @@ def _json_request(req: request.Request, *, timeout: float) -> dict:
                 retry_after=_retry_after_seconds(exc.headers),
             ) from exc
         raise LLMPermanentError(f"API error {exc.code}: {detail}") from exc
-    except URLError as exc:
-        raise LLMTransientError(f"Could not reach API: {exc.reason}") from exc
+    except (URLError, ssl.SSLCertVerificationError) as exc:
+        reason = exc.reason if isinstance(exc, URLError) else exc
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            # Repeating the request cannot repair a certificate or a local
+            # trust configuration. Keep TLS verification intact and surface
+            # the cause even when the action has an unbounded retry budget.
+            raise LLMPermanentError(
+                f"HTTPS certificate verification failed: {reason}. "
+                "Check the server certificate and this Python installation's "
+                "trusted CA certificates. If using a custom CA, configure "
+                "SSL_CERT_FILE or SSL_CERT_DIR with its trusted certificates."
+            ) from exc
+        raise LLMTransientError(f"Could not reach API: {reason}") from exc
     except TimeoutError as exc:
         raise LLMTransientError(f"API request timed out after {timeout}s") from exc
     except OSError as exc:

@@ -3808,6 +3808,87 @@ def test_failed_redeploy_keeps_the_active_profile_and_remains_ready(
     ]) == 0
 
 
+def test_protocol_update_is_refused_before_publication_and_keeps_the_old_run(
+    tmp_path, monkeypatch, capsys
+):
+    """A successful launch command cannot make incompatible state resumable."""
+    from zippergen import serve
+
+    source = tmp_path / "workflow.py"
+    source.write_text(WORKFLOW_SOURCE)
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    Workspace(tmp_path).initialize_project(name="upgrade")
+    Workspace(tmp_path).select_workflow("workflow.py:hello", cwd=tmp_path)
+    arguments = ["deploy", "--no-start", "--no-install", "--no-setup", "--yes"]
+    # Real bundles, readiness checks, publication and durable execution. Only
+    # environment installation and external service management are substituted.
+    assert _deploy_main_for_test(arguments) == 0
+    assert _run_prepared_deployment(home) == 0
+    profile_path = _the_deployment(home)
+    original_profile = profile_path.read_bytes()
+    profile = json.loads(original_profile)
+    original_store = Path(profile["store"]).read_bytes()
+    bundles = set((home / "apps").rglob("workflow.py"))
+    capsys.readouterr()
+
+    source.write_text(WORKFLOW_SOURCE.replace(
+        "    return reply @ User",
+        "    User: reply = add_suffix(reply)\n    return reply @ User",
+    ))
+    starts = []
+    monkeypatch.setattr(serve, "_deployment_lifecycle_command", lambda *a: starts.append(a))
+    assert _deploy_main_for_test([a for a in arguments if a != "--no-start"]) == 1
+    output = capsys.readouterr().out
+    assert "workflow state compatibility" in output
+    assert "workflow changed" in output
+    assert "previous deployment was left unchanged" in output
+    assert "Started deployment" not in output
+    assert not starts
+    assert profile_path.read_bytes() == original_profile
+    assert Path(profile["store"]).read_bytes() == original_store
+    assert set((home / "apps").rglob("workflow.py")) == bundles
+    # The deployed source remains the old immutable bundle, even though the
+    # editable source is now different, and its stored result is still usable.
+    assert main(["deploy", "check", "--strict", "--json", "--no-systemd"]) == 0
+    assert _run_prepared_deployment(home) == 0
+
+
+def test_start_and_check_reject_incompatible_saved_workflow_state(
+    tmp_path, monkeypatch, capsys
+):
+    from zippergen import serve
+    from zippergen.store import claim_workflow_identity
+
+    store = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    conn = open_store(str(store))
+    try:
+        claim_workflow_identity(conn, "hello", "a-different-projected-program")
+    finally:
+        conn.close()
+    before = store.read_bytes()
+
+    assert main(["deploy", "check", "--strict", "--json", "--no-systemd"]) == 1
+    checks = json.loads(capsys.readouterr().out)["checks"]
+    failure = next(c for c in checks if c["name"] == "workflow state compatibility")
+    assert failure["status"] == "fail"
+    assert "workflow changed" in failure["detail"]
+
+    monkeypatch.setattr("zippergen.deployment_platform.deployment_service_status", lambda _: {
+        "state": "not-loaded", "healthy": False,
+    })
+
+    def unexpected_start(*args, **kwargs):
+        pytest.fail("an incompatible workflow must not reach the service manager")
+
+    monkeypatch.setattr(serve, "_install_launchd_agent", unexpected_start)
+    monkeypatch.setattr(serve, "_install_systemd_unit", unexpected_start)
+    assert main(["deploy", "start"]) == 1
+    assert "was not started" in capsys.readouterr().out
+    assert store.read_bytes() == before
+
+
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX process death")
 def test_process_death_before_profile_publication_keeps_the_old_release(
     tmp_path, monkeypatch

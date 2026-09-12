@@ -27,8 +27,9 @@ from zippergen.connectors import connector_kind_spec, connector_requirements_fro
 from zippergen.assistant_configuration import normalize_assistant_overrides
 from zippergen.models import selected_llm_specs
 from zippergen.workflow_io import load_workflow_spec
-from zippergen.syntax import Workflow
+from zippergen.syntax import Workflow, _ordered_workflow_lifelines
 from zippergen.store import (
+    check_workflow_identity,
     list_connector_health,
     list_outstanding_messages,
     list_role_states,
@@ -456,6 +457,34 @@ def _doctor_check(status: str, name: str, detail: str, **extra: object) -> dict[
     return {"status": status, "name": name, "detail": detail, **extra}
 
 
+def _workflow_state_check(workflow: Workflow, store_path: Path) -> dict[str, object]:
+    """Reject a protocol update before publishing it against existing state."""
+
+    from zippergen.control import program_fingerprint
+    from zippergen.projection import project
+
+    name = "workflow state compatibility"
+    if not store_path.exists():
+        return _doctor_check("ok", name, "no saved execution to resume")
+    try:
+        fingerprint = program_fingerprint({
+            role.name: project(workflow, role)
+            for role in _ordered_workflow_lifelines(workflow)
+        })
+        conn = open_store_readonly(store_path)
+        try:
+            claimed = check_workflow_identity(conn, workflow.name, fingerprint)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return _doctor_check("fail", name, f"{type(exc).__name__}: {exc}")
+    return _doctor_check(
+        "ok", name,
+        "saved execution matches the projected program" if claimed
+        else "no workflow has claimed this store yet",
+    )
+
+
 def _path_parent_check(label: str, path: Path) -> dict[str, object]:
     parent = path.expanduser().parent
     if not parent.exists():
@@ -870,6 +899,7 @@ def _doctor_checks(
             checks.append(_doctor_check("fail", "workflow import", f"{type(exc).__name__}: {exc}"))
         else:
             checks.append(_doctor_check("ok", "workflow import", f"{profile['workflow']} -> {workflow.name}"))
+            checks.append(_workflow_state_check(workflow, store_path))
             checks.extend(_assistant_workspace_checks(workflow, cwd))
         finally:
             os.chdir(old_cwd)
