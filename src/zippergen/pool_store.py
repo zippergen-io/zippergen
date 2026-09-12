@@ -6,6 +6,7 @@ tables are created lazily in the execution store; ordinary stores are unchanged.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import json
 import secrets
@@ -32,6 +33,12 @@ _SCHEMA = (
         ON pool_jobs(pool, status, lease_until)""",
     """CREATE TABLE IF NOT EXISTS pool_operations (
         operation_id TEXT PRIMARY KEY, request TEXT NOT NULL, result TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS pool_job_context (
+        job_id TEXT PRIMARY KEY, stamp TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS pool_operation_context (
+        operation_id TEXT PRIMARY KEY, incoming TEXT
     )""",
 )
 
@@ -131,12 +138,20 @@ def _perform(conn, operation: PoolOperation, owner: str, inputs: dict, now: floa
 def execute_pool_operation(
     conn: sqlite3.Connection, operation: PoolOperation, *,
     operation_id: str, owner: str, inputs: dict,
+    context_key: str | None = None,
+    observe: Callable[[object, str | None], str] | None = None,
 ):
     """Commit a request and its result together, or return its saved result.
 
     A replayed claim is a historical result, not a lease renewal. Its token
     cannot acknowledge a job after expiry or reassignment. Empty results are
     receipts too: the next poll must be a new logical invocation.
+
+    For monitored workflows, observe computes the completed action's causal
+    stamp from its result and optional incoming stamp. It must leave the live
+    role untouched. Job context and the exact received context commit with the
+    effect and receipt. Replays observe the saved receipt, never current job
+    state. context_key identifies the role's pre-event state for idempotency.
     """
     if conn.in_transaction:
         raise PoolError("A pool operation must run outside the role transaction.")
@@ -146,7 +161,12 @@ def execute_pool_operation(
     if operation.operation not in {"put", "try_claim", "ack", "release"} or set(inputs) != expected:
         raise PoolError("Invalid pool operation inputs.")
     validate_zvalue(inputs, Json, context="Pool operation inputs")
-    request = _json({"pool": operation.semantics(), "owner": owner, "inputs": inputs})
+    if (context_key is None) != (observe is None):
+        raise PoolError("Monitored pool operations need both context identity and observation.")
+    request_data = {"pool": operation.semantics(), "owner": owner, "inputs": inputs}
+    if context_key is not None:
+        request_data["causal_context"] = context_key
+    request = _json(request_data)
     conn.execute("BEGIN IMMEDIATE")
     try:
         for statement in _SCHEMA:
@@ -158,6 +178,14 @@ def execute_pool_operation(
             if previous[0] != request:
                 raise PoolOperationConflict("This pool invocation was already executed with a different request.")
             result = json.loads(previous[1])
+            if observe is not None:
+                saved = conn.execute(
+                    "SELECT incoming FROM pool_operation_context WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if saved is None:
+                    raise PoolError("The saved pool operation is missing CPL context.")
+                observe(result, saved[0])
         else:
             conn.execute(
                 "INSERT INTO work_pools(name,lease_seconds) VALUES(?,?) ON CONFLICT(name) DO NOTHING",
@@ -171,6 +199,29 @@ def execute_pool_operation(
             now = time.time()
             _expire(conn, operation.pool, now)
             result = _perform(conn, operation, owner, inputs, now)
+            if observe is not None:
+                incoming = None
+                if operation.operation == "try_claim" and result is not None:
+                    assert isinstance(result, dict)
+                    published = conn.execute(
+                        "SELECT stamp FROM pool_job_context WHERE job_id=?",
+                        (result["job_id"],),
+                    ).fetchone()
+                    if published is None:
+                        raise PoolError("The claimed job is missing CPL context.")
+                    incoming = published[0]
+                stamp = observe(result, incoming)
+                if operation.operation in {"put", "release"}:
+                    job_id = result if operation.operation == "put" else inputs["claim"]["job_id"]
+                    conn.execute(
+                        "INSERT INTO pool_job_context(job_id,stamp) VALUES(?,?) "
+                        "ON CONFLICT(job_id) DO UPDATE SET stamp=excluded.stamp",
+                        (job_id, stamp),
+                    )
+                conn.execute(
+                    "INSERT INTO pool_operation_context(operation_id,incoming) VALUES(?,?)",
+                    (operation_id, incoming),
+                )
             conn.execute(
                 "INSERT INTO pool_operations(operation_id,request,result) VALUES(?,?,?)",
                 (operation_id, request, _json(result)),

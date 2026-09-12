@@ -216,7 +216,7 @@ def interrupted(self, pending):
         target = sys.argv[3]
         if operation.operation == target or (
             target == "empty" and operation.operation == "try_claim"
-            and next(iter(result.values())) is None
+            and next(iter(result.outputs.values())) is None
         ):
             os._exit(91)
     return result

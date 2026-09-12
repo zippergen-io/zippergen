@@ -369,7 +369,10 @@ so external work still needs its own idempotency protection.
 
 See the [two-worker example](https://github.com/zippergen-io/zippergen/blob/main/examples/work_pool/workflow.py)
 and its [specification and run commands](https://github.com/zippergen-io/zippergen/blob/main/examples/work_pool/specification.md).
-Pool operations do not transfer CPL causal context; the
+Jobs automatically carry CPL context from their completed `put` or latest
+explicit `release` to a successful claim. See the
+[CPL approval example](https://github.com/zippergen-io/zippergen/blob/main/examples/work_pool_cpl/workflow.py),
+which checks approval and job identity without a producer-to-worker message. The
 [durable storage guide](https://github.com/zippergen-io/zippergen/blob/main/docs/durable-storage.md)
 explains their recovery guarantees.
 
@@ -496,6 +499,7 @@ configurations, participants, actions, and connector requirements.
 | [`examples/pair_programming.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/pair_programming.py) | two coding assistants and a person: one answer decides whether both continue |
 | [`examples/parallel.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/parallel.py) | a parallel region, and what each participant runs inside it |
 | [`examples/work_pool/workflow.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/work_pool/workflow.py) | two workers claim and acknowledge jobs from a durable FIFO pool |
+| [`examples/work_pool_cpl/workflow.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/work_pool_cpl/workflow.py) | a CPL approval guard gets its causal evidence through a claimed job |
 | [`examples/human_approval.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/human_approval.py) | every shape a `@human` question can take |
 | [`examples/inbox_triage.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/inbox_triage.py) | Gmail in, Sheets out, deployed as a supervised service |
 | [Your first ZipperGen workflow](https://github.com/zippergen-io/zippergen/blob/main/docs/first-workflow.pdf) | the tutorial |

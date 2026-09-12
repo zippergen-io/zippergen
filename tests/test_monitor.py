@@ -13,6 +13,43 @@ def make_monitor(name: str, lifelines: list[str], formula):
     return MonitorState(name, lifelines, subs)
 
 
+def test_pool_handoffs_preserve_event_kind_previous_and_monotone_causal_past():
+    seen = []
+
+    def inspect(env, event):
+        seen.append(event)
+        return env.get("approved", False)
+
+    approval = atom(inspect, src="approval", version="v1", fields=("approved",))
+    latest = At["A"](approval)
+    previous = Y(approval)
+    ever = P(approval)
+    formula = latest | previous | ever
+    a = make_monitor("A", ["A", "B"], formula)
+    b = make_monitor("B", ["A", "B"], formula)
+
+    a.on_event("act", {"approved": True})
+    old = a.snapshot_vc(), a.snapshot_view(), a.snapshot_field_view()
+    a.on_event("act", {"approved": False})
+    new = a.snapshot_vc(), a.snapshot_view(), a.snapshot_field_view()
+    b.on_event("act", {"approved": False})
+    b.on_event("act", {"approved": True},
+               recv_vc=new[0], recv_view=new[1], recv_field_view=new[2])
+    assert not b.guard_value(previous)  # preceding local action had False
+    assert not b.guard_value(latest)
+    assert b.guard_value(ever)
+    assert seen[-1].kind == "act"
+    assert seen[-1].message_vc is None and seen[-1].message_view is None
+    assert seen[-1].causal_vc == new[0]
+
+    b.on_event("act", {"approved": False},
+               recv_vc=old[0], recv_view=old[1], recv_field_view=old[2])
+    assert b.guard_value(previous)
+    assert not b.guard_value(latest)  # late delivery cannot revive old approval
+    assert b.guard_value(ever)
+    assert b.snapshot_vc() == {"A": 2, "B": 3}
+
+
 def wire_view(monitor, entries):
     """Encode formula objects with the stable indexes used on messages."""
     indexes = {

@@ -72,9 +72,11 @@ class _ResolvedExternal:
     """Result returned by the durable driver after an outside-world call."""
 
     outputs: dict[str, object]
-    trace_seq: int | None
+    trace_seq: int | None = None
     attempt_id: str | None = None
     duration_ms: int | None = None
+    monitor_state: dict | None = None
+    trace_fields: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -656,7 +658,12 @@ def _step(
                 out_map = resolution.outputs
                 env.update(out_map)
                 if monitor:
-                    monitor.on_event("act", env)
+                    if resolution.monitor_state is None:
+                        monitor.on_event("act", env)
+                    else:
+                        # The pool transaction already observed this logical
+                        # action. Adopt it once with the successor role state.
+                        monitor.restore_state(resolution.monitor_state)
                 if trace and _action_visible(action):
                     act_seq = resolution.trace_seq
                     if act_seq is None:
@@ -674,6 +681,7 @@ def _step(
                         "attempt_id": resolution.attempt_id,
                         "duration_ms": resolution.duration_ms,
                         **_monitor_trace_fields(monitor),
+                        **(resolution.trace_fields or {}),
                     })
                 return EmptyStmt(), True
             trace_start = None

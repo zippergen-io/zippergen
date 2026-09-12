@@ -206,8 +206,9 @@ built-in operations; arbitrary `@effect` functions still have the contract
 above. A new visit to a loop action gets a new ID, while recovery at the same
 position reuses the original ID. Reusing an ID with changed arguments fails.
 
-Optional tables `work_pools`, `pool_jobs` and `pool_operations` are created
-atomically on first use. A pool mutation and its result receipt share a short
+Optional tables `work_pools`, `pool_jobs`, `pool_operations`,
+`pool_job_context` and `pool_operation_context` are created atomically on first
+use. A pool mutation, its CPL context and its result receipt share a short
 transaction outside the role transaction. If the worker dies before recording
 the returned value, the operation reads its saved receipt on retry. This
 includes empty claim results. Receipts and completed jobs are retained, so
@@ -231,8 +232,26 @@ cannot silently resume old claims. Existing workflows without pools retain
 their previous fingerprint and schema contract. The in-memory runner cannot
 execute pool actions; ordinary workflow calls and CLI runs use SQLite.
 
-Pool effects are not channel sends/receives and do not merge CPL state. Any
-required cross-lifeline ordering must still be established by messages.
+With CPL guards present, a put stores the completed action's vector clock,
+formula views and selected field values on the job. A successful claim imports
+that snapshot as part of its single action event. Release publishes the
+releasing worker's completed event context; lease expiry retains the last
+published snapshot and adds no knowledge of the expired worker. Empty claims
+and acknowledgements have no incoming pool edge.
+
+The original incoming context is retained with each operation receipt. A
+retried claim observes that context even if the job has since been released,
+reassigned or completed. The role's pre-event monitor and environment identify
+the causal request; changed state fails the idempotency check. The result,
+updated monitor and successor control state are then recorded together. No
+trace history is needed. Context is internal metadata, never trusted from a
+user-editable claim payload. Missing required context fails the operation.
+
+The `item-handoff-v1` policy is part of pool workflow identity. Saved executions
+from before this policy are refused before startup; finish with their original
+runtime or archive/reset them to start fresh. No-pool workflow identities are
+unchanged. See [Pool causality](pool-causality.md) for event semantics and the
+distinction between a causal view and current authorization.
 
 ### Retries live in memory, not in the store
 
@@ -331,6 +350,12 @@ receive:  stamped message + receiver's state -> receiver's new state,
 A crash can never leave a stamped message whose sender did not record the
 event, nor a receiver that absorbed a stamp while the message survives. Both
 directions have a test.
+
+Pools use a separate effect transaction: the job's context and operation
+receipt may commit before the role checkpoint. The receipt makes that exact
+logical event replayable, including its original incoming context. The
+checkpoint then adopts the updated monitor once. See **Managed work pools**
+above; this is a different commit boundary from a FIFO message.
 
 The model in one line: **the relevant past lives in the current causal state;
 the message table is communication not yet absorbed.**

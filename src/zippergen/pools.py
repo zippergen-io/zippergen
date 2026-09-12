@@ -2,7 +2,8 @@
 
 Declarations are immutable. Jobs, leases and operation receipts live in the
 managed SQLite store, never in the declaration or a Python module global.
-Pool operations do not propagate CPL context or introduce channel messages.
+Jobs carry CPL context across puts, successful claims and explicit releases.
+Pool operations remain local effects; they do not introduce channel messages.
 """
 from __future__ import annotations
 
@@ -57,6 +58,7 @@ class PoolOperation:
             "order": "fifo-ready",
             "lease_seconds": self.lease_seconds,
             "operation": self.operation,
+            "causality": "item-handoff-v1",
         }
 
 

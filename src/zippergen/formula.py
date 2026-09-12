@@ -56,6 +56,10 @@ class EventContext:
     incoming message; vc is the monitor's vector clock after merging and
     counting the current event.
 
+    causal_vc carries the incoming clock for both messages and successful
+    pool claims. Pool operations remain act events; their message fields are
+    None. An empty claim imports no causal clock.
+
     field_view[B][x] is the value of variable x at the latest event of
     lifeline B causally visible to the current event.  Use this inside
     atom() to implement field terms: @B.x in the paper notation.
@@ -67,6 +71,7 @@ class EventContext:
     message_vc: Mapping[str, int] | None = None
     message_view: Mapping[str, Mapping[int, bool]] | None = None
     field_view: Mapping[str, Mapping[str, object]] | None = None
+    causal_vc: Mapping[str, int] | None = None
 
 
 # ---------------------------------------------------------------------------

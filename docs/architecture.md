@@ -157,10 +157,19 @@ Pool actions run through the existing effect boundary. Their database mutation
 and receipt commit together, separately from role advancement. The durable
 invocation ID derives from the role, committed step count and action path,
 scoped by the execution store. No new statement or message kind is introduced.
-These actions do not propagate CPL metadata. FIFO selection is among ready
-jobs, not a promise about worker fairness, completion order, or eventual
-successful processing. Shared-resource dependencies are outside the current
-channel-based causal model.
+With CPL active, a completed put or release stores its event context on the
+job, and a successful claim imports that context using the monitor's existing
+merge rule. The role runner computes the event on a separate monitor instance;
+the pool commits context with its mutation and receipt, then the interpreter
+adopts the computed monitor with the action result and successor state. Replay
+uses the receipt's original incoming context. The pool transaction leaves the
+live monitor unchanged, and no synthetic receive event is inserted.
+
+FIFO selection is among ready jobs, not a promise about worker fairness,
+completion order, or eventual successful processing. Pool handoffs extend the
+runtime's monitored causal relation; the existing channel/projection results
+do not themselves prove this shared-resource extension. The exact boundary is
+documented in [Pool causality](pool-causality.md).
 
 ### Coding-agent integration (`skill.py`, `skills/`)
 There is no interactive shell. A ZipperGen project is an ordinary directory

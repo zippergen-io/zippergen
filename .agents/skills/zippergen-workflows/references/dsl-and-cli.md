@@ -307,20 +307,39 @@ Keep claims in workflow variables, never mutable globals. External processing
 can still repeat after a crash or lease expiry; use `claim["job_id"]` as the
 business idempotency key where the external service supports it.
 
-Pool actions do not transmit CPL context. An explicit message is still needed
-when one lifeline must wait for another's submission. Shared pools do not
-make competing effects independent for verification purposes. Keep dependent
-business steps ordered, and use parallel workers only for jobs whose processing
-may safely overlap.
+With CPL guards present, completed puts attach their causal context to jobs;
+successful claims import it automatically. Explicit release publishes the
+worker's context, while lease expiry retains the last published context.
+An empty claim imports nothing, and an acknowledgement adds no handoff edge.
+Each operation is still one local action. The context is internal metadata,
+not a field to copy into or extract from the claim's JSON payload.
+
+Use correlation in guards, for example `(At[Producer].approved == True) &
+(At[Producer].job_id == Here.job_id)`, after extracting the claim's job ID
+through a pure action. `At` is the latest causally visible state, not an archive
+of this job's approval or a query for current authorization. A later message
+or job can supersede that view; a revocation needs explicit coordination when
+it must be observed. Do not treat approval of some earlier request as evidence
+for the current one. See `examples/work_pool_cpl/` for a complete example.
+
+An explicit message is still needed when the first claim must wait for another
+lifeline's submission. Shared pools do not make competing effects independent
+for verification purposes. Keep dependent business steps ordered, and use
+parallel workers only for jobs whose processing may safely overlap. Pool
+handoffs extend runtime monitoring; the existing projection theorems alone
+do not prove this shared-resource extension.
 
 Ordinary calls and `zg run` use temporary SQLite state; durable runs and
 deployments retain it. Pools are isolated between executions, including two
 deployments using the same pool name. Reset/archive/backup applies to the pool
 as part of the execution store. The optional in-memory runner does not support
 pool actions. Job records and receipts are retained for recovery and are not
-pruned by history compaction. Changing a used pool's name or lease policy
-changes its durable workflow identity. Use one consistent declaration per
-name, and review its semantic diff before updating a saved execution.
+pruned by history compaction, including the saved context needed for replay.
+Changing a used pool's name, lease policy or causal semantics changes its
+durable workflow identity. Executions from the earlier pool implementation
+without CPL handoffs must finish on that runtime or be archived/reset before a
+fresh start. Use one consistent declaration per name, and review its semantic
+diff before updating a saved execution.
 
 Test both empty and non-empty branches, multiple consumers, release/expiry,
 stale acknowledgements, and fresh-process resume after a pool operation commits
@@ -987,7 +1006,8 @@ an SSH key.
 Before handoff, verify:
 
 - Cross-participant transfers use explicit messages or declared pool actions;
-  only messages propagate CPL context.
+  CPL guards distinguish causally visible evidence from current authorization
+  and correlate approvals with the request/job being handled.
 - Every guard has one correct owner that possesses its data.
 - Effects are retry-safe and testable with fake services.
 - No mutable module global carries per-run state between actions.

@@ -131,17 +131,23 @@ class MonitorState:
         ----------
         kind            : "send" | "recv" | "act" | "choice"
         env             : the local variable store AFTER the event's effect has been applied.
-        recv_vc         : vector clock piggybacked on the incoming message (recv only).
-        recv_view       : boolean-view table piggybacked on the incoming message (recv only).
-        recv_field_view : field-view table piggybacked on the incoming message (recv only).
+        recv_vc         : vector clock from an incoming message or pool handoff.
+        recv_view       : boolean-view table accompanying that clock.
+        recv_field_view : field-view table accompanying that clock.
+
+        A successful pool claim is one "act" event with incoming metadata.
+        It uses the same merge rule as a receive without creating a synthetic
+        message or an extra local event. Empty claims carry no metadata.
         """
         A = self.name
 
-        # --- Lines 2-9: merge incoming vc, view, and field_view (recv only) ---
-        if kind == "recv":
+        # Merge every explicit incoming causal edge using the same rule.
+        if kind == "recv" or any(
+            value is not None for value in (recv_vc, recv_view, recv_field_view)
+        ):
             if recv_vc is None or recv_view is None:
                 raise RuntimeError(
-                    f"monitored receive on lifeline '{A}' is missing vector-clock metadata"
+                    f"monitored receive or handoff on lifeline '{A}' is missing vector-clock metadata"
                 )
             for B in self.lifelines:
                 if recv_vc.get(B, 0) > self.vc[B]:
@@ -175,9 +181,10 @@ class MonitorState:
             kind=kind,
             lifeline=A,
             vc=dict(self.vc),
-            message_vc=dict(recv_vc) if recv_vc is not None else None,
-            message_view={b: dict(v) for b, v in recv_view.items()} if recv_view is not None else None,
+            message_vc=dict(recv_vc) if kind == "recv" and recv_vc is not None else None,
+            message_view={b: dict(v) for b, v in recv_view.items()} if kind == "recv" and recv_view is not None else None,
             field_view=_copy_field_view(self.field_view, self.tracked_fields),
+            causal_vc=dict(recv_vc) if recv_vc is not None else None,
         )
 
         # --- Lines 19-21: evaluate subformulas in bottom-up order ---

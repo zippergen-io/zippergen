@@ -16,8 +16,10 @@ seconds and is not renewed automatically.
 
 The pool belongs to this execution's managed SQLite store. A new execution has
 a new pool. Pool operations are external effects relative to the interpreter
-transaction and do not transfer CPL causal context. The explicit notification
-messages establish that submission precedes each worker's attempt.
+transaction. When a workflow uses CPL, each successful claim also imports the
+job's published causal context. The explicit notification messages here
+establish that submission precedes each worker's attempt; this example needs
+no CPL guard. See `examples/work_pool_cpl/` for a guard using pool context.
 
 Run from the repository root using the checkout's environment (the installed
 PyPI version may not yet include `Pool`):

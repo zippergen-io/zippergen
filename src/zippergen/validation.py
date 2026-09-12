@@ -260,7 +260,7 @@ def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, objec
             "name": f"work pool {name}",
             "detail": (
                 f"execution-local FIFO pool; lease {next(iter(leases)):g}s; "
-                "no worker-fairness or CPL propagation guarantee"
+                "CPL context follows claimed jobs; no worker-fairness guarantee"
                 if consistent else "conflicting lease declarations for the same pool"
             ),
         })

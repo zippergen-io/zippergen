@@ -25,6 +25,10 @@ The crash rule:
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import replace
+import hashlib
+import json
 import sqlite3
 import threading
 import time
@@ -367,23 +371,68 @@ class RoleRunner:
 
         return self.steps
 
-    def _resolve_external(self, pending: PendingExternal) -> dict:
+    def _resolve_pool(self, pending: PendingExternal) -> _ResolvedExternal:
+        from zippergen.monitor import MonitorState
+        from zippergen.pool_store import execute_pool_operation, pool_operation_id
+        from zippergen.pools import PoolOperation
+        from zippergen.store import _decode_causal_stamp, _encode_causal_stamp
+        from zippergen.value_codec import encode_value
+
+        node = cast(ActStmt, pending.node)
+        observed = None
+        context_key = None
+        incoming_vc = None
+        observe: Callable[[object, str | None], str] | None = None
+        if self.monitor is not None:
+            before = self.monitor.snapshot_state()
+            observed = MonitorState(self.role, self.monitor.lifelines, self.monitor.subformulas)
+            observed.restore_state(before)
+            # Bind the receipt to the exact pre-event state and output binding,
+            # without storing a second copy of the role's whole environment.
+            context_key = hashlib.sha256(json.dumps(
+                [before, encode_value(self.env), node.outputs[0].name],
+                sort_keys=True, separators=(",", ":"), allow_nan=False,
+            ).encode()).hexdigest()
+
+            def observe_event(result, incoming):
+                nonlocal incoming_vc
+                assert observed is not None
+                vc, view, fields = _decode_causal_stamp(incoming)
+                incoming_vc = vc
+                observed.on_event(
+                    "act", {**self.env, node.outputs[0].name: result},
+                    recv_vc=vc, recv_view=view, recv_field_view=fields,
+                )
+                stamp = _encode_causal_stamp(
+                    observed.snapshot_vc(), observed.snapshot_view(), observed.snapshot_field_view(),
+                )
+                assert stamp is not None
+                return stamp
+
+            observe = observe_event
+
+        action = cast(EffectAction, node.action)
+        result = execute_pool_operation(
+            self.conn, cast(PoolOperation, action.fn),
+            operation_id=pool_operation_id(self.role, self.steps, self.node_paths[id(node)]),
+            owner=self.role, inputs=pending.inputs,
+            context_key=context_key, observe=observe,
+        )
+        return _ResolvedExternal(
+            {node.outputs[0].name: result},
+            monitor_state=None if observed is None else observed.snapshot_state(),
+            trace_fields={"causal_vc": incoming_vc} if incoming_vc is not None else None,
+        )
+
+    def _resolve_external(self, pending: PendingExternal) -> _ResolvedExternal:
         node = cast(ActStmt, pending.node)
         action = node.action
         if isinstance(action, HumanAction) and action.required:
-            return self._resolve_human_task(pending)
+            return _ResolvedExternal(self._resolve_human_task(pending))
         from zippergen.pools import PoolOperation
         if isinstance(action, EffectAction) and isinstance(action.fn, PoolOperation):
-            from zippergen.pool_store import execute_pool_operation, pool_operation_id
-            result = execute_pool_operation(
-                self.conn, action.fn,
-                operation_id=pool_operation_id(
-                    self.role, self.steps, self.node_paths[id(node)],
-                ),
-                owner=self.role, inputs=pending.inputs,
-            )
-            return {node.outputs[0].name: result}
-        return external_out_map(
+            return self._resolve_pool(pending)
+        return _ResolvedExternal(external_out_map(
             action,
             pending.inputs,
             node.outputs,
@@ -395,7 +444,7 @@ class RoleRunner:
             # here blocks nothing but itself.
             stop=self.stop,
             trace=self.trace,
-        )
+        ))
 
     # ---- the loop ---------------------------------------------------------
     def step(self, residual, *, resolved: dict | None = None):
@@ -442,7 +491,7 @@ class RoleRunner:
                     self.trace(out.trace_start)
                 started_at = time.monotonic()
                 try:
-                    out_map = self._resolve_external(out)
+                    resolution = self._resolve_external(out)
                 except BaseException as exc:
                     if (
                         out.trace_start is not None
@@ -482,11 +531,11 @@ class RoleRunner:
                     advanced, moved = self.step(
                         self.residual,
                         resolved={
-                            id(out.node): _ResolvedExternal(
-                                out_map,
-                                out.trace_seq,
-                                out.attempt_id,
-                                duration_ms,
+                            id(out.node): replace(
+                                resolution,
+                                trace_seq=out.trace_seq,
+                                attempt_id=out.attempt_id,
+                                duration_ms=duration_ms,
                             )
                         },
                     )
