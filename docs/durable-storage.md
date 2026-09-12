@@ -198,6 +198,42 @@ We do not claim at-most-once or exactly-once for anything external. If you need
 it, the outside system has to offer idempotency, and today ZipperGen does not
 thread an idempotency key through `@effect`.
 
+### Managed work pools
+
+`Pool("jobs")` supplies ordinary `put`, `try_claim`, `ack` and `release` effect
+actions. The default SQLite runner supplies stable invocation IDs for these
+built-in operations; arbitrary `@effect` functions still have the contract
+above. A new visit to a loop action gets a new ID, while recovery at the same
+position reuses the original ID. Reusing an ID with changed arguments fails.
+
+Optional tables `work_pools`, `pool_jobs` and `pool_operations` are created
+atomically on first use. A pool mutation and its result receipt share a short
+transaction outside the role transaction. If the worker dies before recording
+the returned value, the operation reads its saved receipt on retry. This
+includes empty claim results. Receipts and completed jobs are retained, so
+their storage grows with use; history compaction does not delete them.
+
+Claims reserve jobs for 300 seconds by default, configurable through
+`Pool("jobs", lease_seconds=...)`. Leases use the host clock and are not
+renewed automatically. Expired leases are reclaimed lazily by new pool
+operations. Released and expired jobs join the tail of the ready queue.
+Only the owner with the current token may acknowledge an active claim.
+Replaying a successful acknowledgement returns its saved success even after
+the lease would have expired. Replaying a claim never restores ownership.
+External processing before acknowledgement may still repeat; the job ID is
+available for a provider's idempotency mechanism.
+
+Pools belong to the execution store, not to a module global or the machine's
+connector namespace. Different runs are isolated. Backup, archive and reset
+include all pool state; deleting history leaves it intact. Pool policy is part
+of the fingerprint for workflows that use pools, so a changed declaration
+cannot silently resume old claims. Existing workflows without pools retain
+their previous fingerprint and schema contract. The in-memory runner cannot
+execute pool actions; ordinary workflow calls and CLI runs use SQLite.
+
+Pool effects are not channel sends/receives and do not merge CPL state. Any
+required cross-lifeline ordering must still be established by messages.
+
 ### Retries live in memory, not in the store
 
 An `@llm` action may declare `retries=` and a `fallback=`. The whole attempt is

@@ -233,6 +233,11 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
    Keep globals for immutable configuration or disposable caches only.
 4. Send values explicitly when ownership crosses a lifeline. Place every guard
    at the lifeline that actually knows and owns the decision.
+   For competing consumers of execution-local work, use the built-in `Pool`
+   actions described in the reference's **Work pools** section. Keep the empty
+   branch and acknowledgement boundary explicit. Pool transfers are visible
+   effects; they do not propagate CPL context or replace a required ordering
+   message.
 5. Add focused tests that run with mock LLMs or fake services. Test protocol
    structure and safety behavior separately from live integrations.
    For a durable claim/finalize sequence, test a fresh-process resume after

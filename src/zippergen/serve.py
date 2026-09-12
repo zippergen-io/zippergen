@@ -1263,10 +1263,16 @@ def _run_workflow_from_project(args, workspace) -> int:
         connector_snapshot, connector_environment
     )
 
-    # A public plain run remains disposable. A configured asynchronous human
-    # connector needs SQLite coordination while the process is alive, so use
+    # A public plain run remains disposable. Pools and asynchronous human
+    # connectors need SQLite coordination while the process is alive, using
     # a private temporary store without turning the run into resumable state.
     execution = str(getattr(args, "execution", None) or "memory")
+    from zippergen.pools import pool_operations
+    uses_pools = bool(pool_operations(wf))
+    if uses_pools:
+        # Pools need transactional coordination even during a disposable run.
+        # run_sqlite owns a temporary store when no persistent path is given.
+        execution = "sqlite"
     store_path = internal_store
     connector_thread = None
     connector_stop = None
@@ -1314,6 +1320,10 @@ def _run_workflow_from_project(args, workspace) -> int:
         from zippergen.human_backends import make_sqlite_human_backend
 
         configure_kwargs["human_backend"] = make_sqlite_human_backend()
+    elif uses_pools:
+        from zippergen.human_backends import make_cli_human_backend
+
+        configure_kwargs["human_backend"] = make_cli_human_backend()
     from zippergen.assistant_backends import make_cli_assistant_backend
 
     configure_kwargs["assistant_backend"] = (

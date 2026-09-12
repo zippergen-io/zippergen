@@ -254,6 +254,81 @@ not commit, another call to `finalize` must recognize the completed item and
 return the same outcome. Test both cases using a fresh process; an in-process
 test cannot reveal reliance on a module global.
 
+### Work pools
+
+Use `Pool` for independent jobs that any of several lifelines in the same
+execution may claim. It is an immutable declaration with ordinary effect
+actions, not another choreography construct. No connector setup is required:
+the default SQLite runner stores jobs and receipts with the execution.
+
+```python
+from zippergen import Json, Lifeline, Pool, pure, workflow
+
+Worker = Lifeline("Worker")
+jobs = Pool("jobs")
+
+@pure
+def process(claim: Json) -> str:
+    return str(claim["payload"])
+
+@workflow
+def handle_one(payload: Json @ Worker):
+    Worker: submitted = jobs.put(payload)
+    Worker: claim = jobs.try_claim()
+    if (claim is not None) @ Worker:
+        Worker: result = process(claim)
+        Worker: completed = jobs.ack(claim)
+```
+
+`put(payload)` returns a job ID. `try_claim()` returns `None` or a Json record
+with `pool`, `job_id`, `token`, and `payload`. Pass the entire claim to
+`ack(claim)` or `release(claim)` on the claiming lifeline. Both return `True`
+on success. Acknowledgement marks business processing complete; place all
+required work before it. Release returns unfinished work to the ready queue.
+Do not treat acknowledging a rejected job as approving its business request.
+
+Each new claim selects the oldest ready job. Release and lease expiry append
+jobs to the tail. Worker selection and completion order are unspecified.
+`None` means no job was available at that operation, not global completion.
+Use an explicit loop to poll again, with an appropriate wait for a persistent
+poller. FIFO provides no fairness guarantee between polling workers.
+
+The runtime supplies stable operation IDs. A retry returns the saved result,
+including `None`; a new loop visit has a new ID. Never generate claim tokens
+or implement a destructive pop in workflow helpers. Claims use a fixed lease
+of 300 seconds by default; `Pool("jobs", lease_seconds=900)` declares a longer
+one when needed. There is no automatic renewal. Replaying a claim returns its
+original handle and does not revive an expired lease. Expired, released or
+foreign claims raise `ClaimExpired` when used to acknowledge or release work.
+Long human waits require a different ownership design or a suitable lease;
+do not imply that a default claim stays valid indefinitely.
+
+Keep claims in workflow variables, never mutable globals. External processing
+can still repeat after a crash or lease expiry; use `claim["job_id"]` as the
+business idempotency key where the external service supports it.
+
+Pool actions do not transmit CPL context. An explicit message is still needed
+when one lifeline must wait for another's submission. Shared pools do not
+make competing effects independent for verification purposes. Keep dependent
+business steps ordered, and use parallel workers only for jobs whose processing
+may safely overlap.
+
+Ordinary calls and `zg run` use temporary SQLite state; durable runs and
+deployments retain it. Pools are isolated between executions, including two
+deployments using the same pool name. Reset/archive/backup applies to the pool
+as part of the execution store. The optional in-memory runner does not support
+pool actions. Job records and receipts are retained for recovery and are not
+pruned by history compaction. Changing a used pool's name or lease policy
+changes its durable workflow identity. Use one consistent declaration per
+name, and review its semantic diff before updating a saved execution.
+
+Test both empty and non-empty branches, multiple consumers, release/expiry,
+stale acknowledgements, and fresh-process resume after a pool operation commits
+but before the worker records its result. The repository example is
+`examples/work_pool/workflow.py`.
+
+### Coding-assistant actions
+
 Coding-assistant work is a distinct, inspectable external action:
 
 ```python
@@ -911,7 +986,8 @@ an SSH key.
 
 Before handoff, verify:
 
-- Every cross-participant value transfer is an explicit message.
+- Cross-participant transfers use explicit messages or declared pool actions;
+  only messages propagate CPL context.
 - Every guard has one correct owner that possesses its data.
 - Effects are retry-safe and testable with fake services.
 - No mutable module global carries per-run state between actions.

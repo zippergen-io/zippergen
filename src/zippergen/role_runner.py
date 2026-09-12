@@ -372,6 +372,17 @@ class RoleRunner:
         action = node.action
         if isinstance(action, HumanAction) and action.required:
             return self._resolve_human_task(pending)
+        from zippergen.pools import PoolOperation
+        if isinstance(action, EffectAction) and isinstance(action.fn, PoolOperation):
+            from zippergen.pool_store import execute_pool_operation, pool_operation_id
+            result = execute_pool_operation(
+                self.conn, action.fn,
+                operation_id=pool_operation_id(
+                    self.role, self.steps, self.node_paths[id(node)],
+                ),
+                owner=self.role, inputs=pending.inputs,
+            )
+            return {node.outputs[0].name: result}
         return external_out_map(
             action,
             pending.inputs,

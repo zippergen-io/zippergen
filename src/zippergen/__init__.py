@@ -17,6 +17,7 @@ from zippergen.semantic import *        # noqa: F401, F403
 from zippergen.google_sheets import *    # noqa: F401, F403
 from zippergen.google_gmail import *     # noqa: F401, F403
 from zippergen.telegram_chat import *    # noqa: F401, F403
+from zippergen.pools import *            # noqa: F401, F403
 
 # This list is deliberately explicit. Adding a name to a module's ``__all__``
 # must not silently expand the package-level public surface.
@@ -35,6 +36,10 @@ __all__: list[str] = [
     "LLMAction",
     "PureAction",
     "EffectAction",
+    "Pool",
+    "PoolError",
+    "ClaimExpired",
+    "PoolOperationConflict",
     "AssistantAction",
     "PlannerAction",
     "HumanAction",

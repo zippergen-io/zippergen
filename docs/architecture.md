@@ -143,11 +143,24 @@ The supporting modules are deliberately split by responsibility:
 - `execution_inspection.py` and `live_display.py` — durable observation,
   including trace interpretation;
 - `connector_wiring.py` — connector records, credentials, and worker lifecycle;
+- `pools.py` — immutable execution-local pool declarations producing ordinary
+  `EffectAction` values;
+- `pool_store.py` — FIFO claims, leases and idempotent operation receipts in
+  the managed SQLite store;
 - `process_environment.py` — the one environment overlay used by runs, checks,
   and foreground commands.
 
 Workflow loading and setup hooks live in `workflow_io.py`. Keep domain logic
 in the focused modules above rather than adding it back to the CLI dispatcher.
+
+Pool actions run through the existing effect boundary. Their database mutation
+and receipt commit together, separately from role advancement. The durable
+invocation ID derives from the role, committed step count and action path,
+scoped by the execution store. No new statement or message kind is introduced.
+These actions do not propagate CPL metadata. FIFO selection is among ready
+jobs, not a promise about worker fairness, completion order, or eventual
+successful processing. Shared-resource dependencies are outside the current
+channel-based causal model.
 
 ### Coding-agent integration (`skill.py`, `skills/`)
 There is no interactive shell. A ZipperGen project is an ordinary directory

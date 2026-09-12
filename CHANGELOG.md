@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added execution-local FIFO work pools: `Pool("jobs")` provides `put`,
+  nonblocking `try_claim`, `ack`, and `release` effect actions. Stable operation
+  receipts survive recovery, claims have fixed leases, and stale acknowledgements
+  are rejected. Pools use the managed SQLite store and do not propagate CPL
+  context. Includes a two-worker example and updated workflow-authoring guidance.
+
 - Deployment readiness now checks saved workflow identity before publishing
   an update or starting a service. An incompatible protocol is rejected with
   reset/restore guidance; the previous deployment and durable state are kept.

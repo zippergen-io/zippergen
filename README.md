@@ -67,6 +67,20 @@ uv tool install "zippergen[google]"
 ZipperGen needs Python 3.11 or newer. It has no other dependencies. It
 installs two commands: `zippergen`, and `zg` for short.
 
+### Running this checkout
+
+The repository can contain features that are not yet on PyPI. From its root,
+install the checkout and run its CLI explicitly:
+
+```bash
+uv sync
+.venv/bin/python -m zippergen.serve --help
+```
+
+When running commands from the repository root, use
+`.venv/bin/python -m zippergen.serve` in place of `zg`. A globally installed
+`zg` continues to use its own installed package.
+
 ## Quick start
 
 ```bash
@@ -322,6 +336,43 @@ person. You can answer it at the terminal or pipe the answer in:
 printf 'n\n' | zg run --llm scripted:replies.json
 ```
 
+## Work pools (unreleased)
+
+Use a pool when several workers should compete for available jobs. Define it
+once, then use its ordinary local actions inside a workflow:
+
+```python
+from zippergen import Pool
+
+jobs = Pool("jobs")
+```
+
+| Action inside a workflow | Meaning |
+|---|---|
+| `Producer: job_id = jobs.put(payload)` | Submit a JSON job. |
+| `Worker: claim = jobs.try_claim()` | Claim the oldest ready job, or return `None` immediately. |
+| `Worker: done = jobs.ack(claim)` | Mark a claimed job as handled. |
+| `Worker: released = jobs.release(claim)` | Return unfinished work to the back of the ready queue. |
+
+Branch on whether the claim is `None`, process `claim["payload"]`, and
+acknowledge only after handling it. An empty result means no job is available
+now; it does not mean the workflow is finished. Use explicit messages when
+submission must precede another participant's claim attempt.
+
+Each execution owns its pool in the managed SQLite store; no separate queue
+service is needed. Durable runs retain jobs and operation receipts across
+restart. Claims expire after 300 seconds by default, configurable with
+`Pool("jobs", lease_seconds=...)`, and are not renewed automatically. Released
+and expired jobs rejoin the back of the queue. FIFO governs job selection;
+worker fairness and completion order are unspecified. Processing may repeat,
+so external work still needs its own idempotency protection.
+
+See the [two-worker example](https://github.com/zippergen-io/zippergen/blob/main/examples/work_pool/workflow.py)
+and its [specification and run commands](https://github.com/zippergen-io/zippergen/blob/main/examples/work_pool/specification.md).
+Pool operations do not transfer CPL causal context; the
+[durable storage guide](https://github.com/zippergen-io/zippergen/blob/main/docs/durable-storage.md)
+explains their recovery guarantees.
+
 ## Durable runs and deployment
 
 Add `--durable` when you want to stop and resume a run:
@@ -444,6 +495,7 @@ configurations, participants, actions, and connector requirements.
 | [`examples/diagnosis.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/diagnosis.py) | two reviewers loop until they agree, the paper's example |
 | [`examples/pair_programming.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/pair_programming.py) | two coding assistants and a person: one answer decides whether both continue |
 | [`examples/parallel.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/parallel.py) | a parallel region, and what each participant runs inside it |
+| [`examples/work_pool/workflow.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/work_pool/workflow.py) | two workers claim and acknowledge jobs from a durable FIFO pool |
 | [`examples/human_approval.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/human_approval.py) | every shape a `@human` question can take |
 | [`examples/inbox_triage.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/inbox_triage.py) | Gmail in, Sheets out, deployed as a supervised service |
 | [Your first ZipperGen workflow](https://github.com/zippergen-io/zippergen/blob/main/docs/first-workflow.pdf) | the tutorial |

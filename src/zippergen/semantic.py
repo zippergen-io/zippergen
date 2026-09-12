@@ -12,6 +12,7 @@ from collections import Counter
 from types import ModuleType
 
 from zippergen.deployment import DeploymentSpec, deployment_spec_from_module
+from zippergen.pools import PoolOperation
 from zippergen.syntax import (
     ActStmt,
     AssistantAction,
@@ -137,6 +138,8 @@ def _action_definition(action: object) -> dict[str, object]:
             "operation": action.operation,
             "visible": action.visible,
         })
+        if isinstance(action.fn, PoolOperation):
+            base["pool"] = action.fn.semantics()
     elif isinstance(action, AssistantAction):
         base.update({
             "kind": "assistant",

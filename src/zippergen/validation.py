@@ -10,6 +10,7 @@ from zippergen.availability import workflow_availability_error
 from zippergen.connectors import connector_requirements_from_module
 from zippergen.deployment import deployment_spec_from_module
 from zippergen.projection import project
+from zippergen.pools import pool_operations
 from zippergen.syntax import (
     ActStmt,
     AssistantAction,
@@ -248,6 +249,21 @@ def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, objec
                         f"{requirement.participant}"
                     ),
                 })
+
+    pools: dict[str, set[float]] = {}
+    for operation in pool_operations(workflow):
+        pools.setdefault(operation.pool, set()).add(operation.lease_seconds)
+    for name, leases in sorted(pools.items()):
+        consistent = len(leases) == 1
+        checks.append({
+            "status": "ok" if consistent else "fail",
+            "name": f"work pool {name}",
+            "detail": (
+                f"execution-local FIFO pool; lease {next(iter(leases)):g}s; "
+                "no worker-fairness or CPL propagation guarantee"
+                if consistent else "conflicting lease declarations for the same pool"
+            ),
+        })
 
     workflow_assistant_actions = assistant_actions(workflow)
     for action in workflow_assistant_actions:

@@ -230,6 +230,12 @@ def _shape(node) -> list:
         fields.append(
             ["signature", _action_signature(action)]
         )
+        # A pool declaration governs persisted claims, including their lease
+        # policy. Its identity must survive resume just like the action site.
+        from zippergen.pools import PoolOperation
+        operation = getattr(action, "fn", None)
+        if isinstance(operation, PoolOperation):
+            fields.append(["pool", operation.semantics()])
     for name in ("payload", "inputs", "bindings"):
         value = getattr(node, name, None)
         if value:

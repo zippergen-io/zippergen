@@ -202,6 +202,13 @@ def _action_signature(action: object) -> str:
 
 
 def _render_action(action: object, *, full: bool) -> list[str]:
+    from zippergen.pools import PoolOperation
+    if isinstance(action, EffectAction) and isinstance(action.fn, PoolOperation):
+        operation = action.fn
+        return [
+            f"{action.name} = Pool({operation.pool!r}, "
+            f"lease_seconds={operation.lease_seconds!r}).{operation.operation}"
+        ]
     signature = _action_signature(action)
     if isinstance(action, (PureAction, EffectAction)) and full:
         try:
