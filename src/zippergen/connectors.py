@@ -57,6 +57,31 @@ def _gmail_description(values: Mapping[str, str]) -> str:
     return f"query {values['query']!r}"
 
 
+def _calendar_description(values: Mapping[str, str]) -> str:
+    return f"calendar {values['calendar_id']}"
+
+
+def _calendar_readiness(
+    requirement: "ConnectorRequirement",
+    binding: Mapping[str, object],
+    environment: Mapping[str, str],
+    live: bool,
+) -> ConnectorReadiness:
+    credential = environment.get(str(binding.get("credential_env") or ""))
+    calendar_id = str(binding.get("calendar_id") or "")
+    if not credential or not calendar_id:
+        return ConnectorReadiness("fail", "Google credential or calendar ID is missing")
+    if not live:
+        return ConnectorReadiness("ok", f"Calendar {calendar_id} is configured")
+    try:
+        from zippergen.google_calendar import GoogleCalendar
+
+        GoogleCalendar(requirement.name, calendar_id, credential, requirement.access).inspect()
+    except Exception as exc:
+        return ConnectorReadiness("fail", f"Google Calendar is unavailable: {exc}")
+    return ConnectorReadiness("ok", f"Calendar {calendar_id} is reachable")
+
+
 def _telegram_readiness(
     requirement: "ConnectorRequirement",
     binding: Mapping[str, object],
@@ -268,6 +293,25 @@ CONNECTOR_KIND_SPECS: tuple[ConnectorKindSpec, ...] = (
             "read-only": "https://www.googleapis.com/auth/spreadsheets.readonly",
             "write": "https://www.googleapis.com/auth/spreadsheets",
             "read-write": "https://www.googleapis.com/auth/spreadsheets",
+        },
+    ),
+    ConnectorKindSpec(
+        name="google-calendar",
+        provider="google",
+        credential="authorized_user_json",
+        settings=(ConnectorSettingSpec(
+            "calendar_id", "Google calendar ID",
+            "Calendar ID from calendar settings, or primary for your own calendar.",
+            "CALENDAR_ID", default="primary",
+        ),),
+        credential_environment_field="credential_env",
+        describe=_calendar_description,
+        readiness=_calendar_readiness,
+        extra="google",
+        scopes={
+            "read-only": "https://www.googleapis.com/auth/calendar.events.readonly",
+            "write": "https://www.googleapis.com/auth/calendar.events",
+            "read-write": "https://www.googleapis.com/auth/calendar.events",
         },
     ),
 )

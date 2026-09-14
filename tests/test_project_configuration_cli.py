@@ -762,6 +762,7 @@ def test_completion_uses_current_project_names(project, capsys):
         "telegram",
         "gmail",
         "google-sheets",
+        "google-calendar",
     ]
 
 

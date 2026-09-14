@@ -122,7 +122,7 @@ def test_every_declared_kind_is_offered_by_the_interactive_command(spec) -> None
 def test_an_undeclared_kind_has_no_spec_anywhere() -> None:
     from zippergen.connectors import connector_kind_spec
 
-    assert connector_kind_spec("google-calendar") is None
+    assert connector_kind_spec("unknown-calendar") is None
     assert connector_kind_spec("") is None
     assert connector_kind_spec(None) is None
 
@@ -166,10 +166,10 @@ def test_every_declared_kind_is_rendered_as_a_route() -> None:
 
 
 def test_a_kind_no_provider_serves_is_refused_at_the_workflow() -> None:
-    with pytest.raises(ValueError, match="google-calendar"):
+    with pytest.raises(ValueError, match="unknown-calendar"):
         ConnectorRequirement(
             name="agenda",
-            kind="google-calendar",
+            kind="unknown-calendar",
             access="read-only",
             participant="Assistant",
         )

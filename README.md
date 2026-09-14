@@ -81,7 +81,7 @@ To update an installation managed by uv:
 uv tool upgrade zippergen
 ```
 
-Gmail and Google Sheets need one extra:
+Gmail, Google Sheets and Google Calendar need one extra:
 
 ```bash
 uv tool install "zippergen[google]"
@@ -276,7 +276,7 @@ deployment. For step-by-step instructions, use these guides:
 ## Configuration
 
 A connector links a workflow to an external service or human channel, such as
-a Telegram chat, Gmail mailbox, or Google Sheet.
+a Telegram chat, Gmail mailbox, Google Sheet or Google Calendar.
 
 Provider connections, models, coding assistants, and connectors follow the
 same configuration pattern:
@@ -464,9 +464,9 @@ records a fresh installation, approvals, process recovery, and workflow updates
 on macOS with a simulated model provider. It also describes the limits of
 those checks.
 
-A workflow can ask a person on Telegram, read Gmail, or write to Google
-Sheets. The destination belongs in project configuration. Credentials stay in
-private state on the machine that runs ZipperGen. For Telegram:
+A workflow can ask a person on Telegram, read Gmail, write to Google
+Sheets or create a Google Calendar event after approval. The destination belongs
+in project configuration. Credentials stay in private state on the machine that runs ZipperGen. For Telegram:
 
 ```bash
 zg provider configure approval-bot telegram
@@ -543,6 +543,7 @@ configurations, participants, actions, and connector requirements.
 | [`examples/work_pool/workflow.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/work_pool/workflow.py) | two workers claim and acknowledge jobs from a durable FIFO pool |
 | [`examples/work_pool_cpl/workflow.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/work_pool_cpl/workflow.py) | a CPL approval guard gets its causal evidence through a claimed job |
 | [`examples/human_approval.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/human_approval.py) | every shape a `@human` question can take |
+| [`examples/calendar_approval/`](https://github.com/zippergen-io/zippergen/tree/main/examples/calendar_approval) | Review a meeting proposal and create it on Google Calendar after approval |
 | [`examples/inbox_triage.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/inbox_triage.py) | Gmail in, Sheets out, deployed as a supervised service |
 | [Your first ZipperGen workflow](https://github.com/zippergen-io/zippergen/blob/main/docs/first-workflow.pdf) | the tutorial |
 | [Development and deployment guide](https://github.com/zippergen-io/zippergen/blob/main/docs/workflow-development-deployment-guide.pdf) | the long reference |

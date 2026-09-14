@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added a Google Calendar connector for reading events and creating single timed
+  events with stable request IDs for recovery. It shares Google authorization,
+  connector configuration and deployment wiring. Includes an approval example.
+
 - The email approval tutorial now keeps each request available until it has
   been handled and preserves its message budget across restart. Completion
   recognizes a repeated call after a crash. This changes the example's

@@ -517,13 +517,49 @@ state.
 the `date` header as trusted arrival time.
 Google connectors need the optional extra, `zippergen[google]`, in the
 environment that runs `zg`; `zg provider check` reports it as *google support
-installed*. `zg provider authorize CONNECTION` then authorizes Gmail and Google
-Sheets together when the workflow requires both, saving the credential on this
+installed*. `zg provider authorize CONNECTION` then authorizes the Google
+services required by the workflow together, saving the credential on this
 machine. Scopes are not typed: they follow from what the requirements declare.
 Declare `access="read-only"` for readers. Use `access="read-write"` only when an
-action modifies Gmail or Sheets. That declaration
+action modifies Gmail, Sheets or Calendar. That declaration
 selects the narrowest supported Google OAuth scope, and deployment refuses to
 start if the granted scopes do not cover it.
+
+## Google Calendar
+
+Declare `kind="google-calendar"` with capabilities `list-events` and/or
+`create-event`. Keep the calendar ID in connector configuration and call
+`GoogleCalendar.from_requirement("agenda")` inside effects labelled with the
+same connector name and operation. Use `list_events(start, end)` for a complete
+paginated interval read and `create_event(request_id, summary=..., start=...,
+end=..., attendees=...)` for a single timed event. Times require explicit UTC
+offsets. Attendees receive invitations, so human approval must cover them too.
+
+The request ID must identify one intended meeting on the calendar. Keep it
+with the proposal in workflow data. Never generate it inside the creation
+effect. Creation derives a stable Google event ID and recovers a matching
+original creation on replay. Conflicting content or a cancelled event fails
+closed. Keep the calendar and Google identity unchanged across retries. Later
+manual edits are not undone, and the receipt does not prove current event
+contents. Google's concurrent ID collision caveat prevents an unconditional
+exactly-once claim. Serialize attempts for the same request.
+
+Reading events does not reserve a time slot or establish every attendee's
+availability. A human wait can make the observation stale. State explicitly
+whether conflicts are allowed and do not claim atomic check-and-book semantics.
+See `examples/calendar_approval/` for the approval workflow and setup.
+
+```bash
+zg connector configure work-calendar google-work google-calendar --calendar-id primary
+zg connector assign agenda work-calendar
+zg provider authorize google-work
+```
+
+Calendar needs the Calendar API enabled in the OAuth client's Google Cloud
+project and Calendar scopes even when Gmail/Sheets are already authorized.
+Read-only uses `calendar.events.readonly`, write uses `calendar.events`.
+The existing Google handoff works on servers without a browser. A live
+connector check reads events and does not prove calendar write permission.
 
 ## Owned control flow
 

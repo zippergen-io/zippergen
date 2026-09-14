@@ -16,6 +16,7 @@ from zippergen.view import *            # noqa: F401, F403
 from zippergen.semantic import *        # noqa: F401, F403
 from zippergen.google_sheets import *    # noqa: F401, F403
 from zippergen.google_gmail import *     # noqa: F401, F403
+from zippergen.google_calendar import *  # noqa: F401, F403
 from zippergen.telegram_chat import *    # noqa: F401, F403
 from zippergen.pools import *            # noqa: F401, F403
 
@@ -151,6 +152,8 @@ __all__: list[str] = [
     "upsert_json_row",
     "GmailError",
     "GmailMailbox",
+    "GoogleCalendar",
+    "GoogleCalendarError",
     "TelegramChat",
     "TelegramChatError",
     # Views and semantic comparison.

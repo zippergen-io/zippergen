@@ -19,7 +19,11 @@ GOOGLE_GMAIL_READONLY_SCOPE = (
     "https://www.googleapis.com/auth/gmail.readonly"
 )
 GOOGLE_GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+GOOGLE_CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
+GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 GOOGLE_SCOPE_ALIASES = {
+    "calendar.events.readonly": GOOGLE_CALENDAR_READONLY_SCOPE,
+    "calendar.events": GOOGLE_CALENDAR_SCOPE,
     "gmail.readonly": GOOGLE_GMAIL_READONLY_SCOPE,
     "gmail.modify": GOOGLE_GMAIL_MODIFY_SCOPE,
     "spreadsheets.readonly": GOOGLE_SHEETS_READONLY_SCOPE,
@@ -118,7 +122,7 @@ def parse_google_scopes(value: str | Iterable[str]) -> tuple[str, ...]:
             "Unknown Google OAuth scope: "
             + ", ".join(unknown)
             + ". Use gmail.readonly, gmail.modify, "
-            "spreadsheets.readonly, or spreadsheets."
+            "spreadsheets.readonly, spreadsheets, calendar.events.readonly, or calendar.events."
         )
     return normalize_google_scopes(scopes)
 
@@ -178,6 +182,12 @@ def google_scopes_cover(
 
     available = set(configured)
     implications = {
+        GOOGLE_CALENDAR_READONLY_SCOPE: {
+            GOOGLE_CALENDAR_SCOPE,
+            "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/calendar",
+        },
+        GOOGLE_CALENDAR_SCOPE: {"https://www.googleapis.com/auth/calendar"},
         GOOGLE_GMAIL_READONLY_SCOPE: {GOOGLE_GMAIL_MODIFY_SCOPE},
         GOOGLE_SHEETS_READONLY_SCOPE: {GOOGLE_SHEETS_SCOPE},
     }
@@ -480,6 +490,8 @@ def check_google_authorization(value: str, *, scopes: Iterable[str]) -> str:
 
 
 __all__ = [
+    "GOOGLE_CALENDAR_SCOPE",
+    "GOOGLE_CALENDAR_READONLY_SCOPE",
     "GOOGLE_GMAIL_MODIFY_SCOPE",
     "GOOGLE_GMAIL_READONLY_SCOPE",
     "GOOGLE_SCOPE_ALIASES",

@@ -516,3 +516,19 @@ def test_two_google_connections_cannot_be_guessed_between(tmp_path):
 
     assert result.returncode != 0
     assert "--scopes" in result.stderr
+
+
+def test_calendar_configuration_uses_existing_google_setup(tmp_path):
+    root = _project(tmp_path)
+    _provider(root, "google-work", "google")
+    result = _run(root, "connector", "configure", "agenda", "google-work", "google-calendar",
+                  "--calendar-id", "team@example.org")
+    assert result.returncode == 0, result.stderr
+    manifest = tomllib.loads((root / "zippergen.toml").read_text())
+    assert manifest["connectors"]["configurations"]["agenda"] == {
+        "connection": "google-work", "kind": "google-calendar", "calendar_id": "team@example.org",
+    }
+    result = _run(root, "connector", "configure", "personal", "google-work", "google-calendar")
+    assert result.returncode == 0, result.stderr
+    manifest = tomllib.loads((root / "zippergen.toml").read_text())
+    assert manifest["connectors"]["configurations"]["personal"]["calendar_id"] == "primary"
