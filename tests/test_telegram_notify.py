@@ -647,6 +647,32 @@ def test_deployment_notifier_action_route_overrides_participant_route(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("failure", ["http", "transport", "api", "shape"])
+def test_telegram_errors_do_not_disclose_tokens_or_response_bodies(monkeypatch, failure):
+    import json
+    import traceback
+
+    private = "private-bot-token-and-chat-content"
+
+    def respond(*args, **kwargs):
+        if failure == "http":
+            raise urllib.error.HTTPError(
+                "https://api.telegram.org/bot" + private, 403, private, {},
+                io.BytesIO(private.encode()),
+            )
+        if failure == "transport":
+            raise urllib.error.URLError(private)
+        payload = {"ok": False, "error_code": 403, "description": private}
+        return io.BytesIO(json.dumps([private] if failure == "shape" else payload).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", respond)
+    with pytest.raises(TelegramAPIError) as caught:
+        TelegramBotClient(private).request("getMe")
+    assert private not in "".join(traceback.format_exception(caught.value))
+    if failure in {"http", "api"}:
+        assert "403" in str(caught.value)
+
+
 @pytest.mark.parametrize(
     "failure",
     [

@@ -99,6 +99,81 @@ def test_read_only_google_sheets_binding_blocks_writes():
         table.replace_rows([], columns=("call_id",))
 
 
+@pytest.mark.parametrize("rows", [
+    {},
+    None,
+    [["call_id", "title"], {"call_id": "broken"}, ["target", "Old"]],
+    ["call_id", ["target", "Old"]],
+])
+def test_upsert_rejects_malformed_rows_without_writing(monkeypatch, rows):
+    table = GoogleSheetsTable("records", "sheet", "Calls", "private")
+    writes = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"values": rows}
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+
+    monkeypatch.setattr(table, "_session", Session)
+    monkeypatch.setattr(table, "_update", lambda *args: writes.append(args))
+    monkeypatch.setattr(table, "_append", lambda *args: writes.append(args))
+    with pytest.raises(GoogleSheetsError, match="malformed"):
+        table.upsert_row({"call_id": "target", "title": "New"},
+                         columns=("call_id", "title"), key_field="call_id")
+    assert not writes
+
+
+def test_upsert_preserves_blank_row_positions(monkeypatch):
+    table = GoogleSheetsTable("records", "sheet", "Calls", "private")
+    writes = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"values": [["call_id", "title"], [], ["target", "Old"]]}
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+
+    monkeypatch.setattr(table, "_session", Session)
+    monkeypatch.setattr(table, "_update", lambda *args: writes.append(args))
+    table.upsert_row({"call_id": "target", "title": "New"},
+                     columns=("call_id", "title"), key_field="call_id")
+    assert writes == [("'Calls'!A3:B3", [["target", "New"]])]
+
+
+def test_replacement_validates_values_before_clearing_sheet(monkeypatch):
+    table = GoogleSheetsTable("records", "sheet", "Calls", "private")
+    requests = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {}
+
+    class Session:
+        def post(self, *args, **kwargs):
+            requests.append((args, kwargs))
+            return Response()
+
+    monkeypatch.setattr(table, "_session", Session)
+    with pytest.raises(TypeError):
+        table.replace_rows([{"call_id": "1", "title": object()}],
+                           columns=("call_id", "title"))
+    assert not requests, "invalid replacement must leave the existing sheet intact"
+
+
 def test_json_helpers_keep_workflow_values_serializable(monkeypatch):
     _runtime_environment(monkeypatch)
     monkeypatch.setattr(

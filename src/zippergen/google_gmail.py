@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import base64
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 from email.utils import parseaddr
 from html import unescape
 from typing import Any
 from urllib.parse import quote
 
+from zippergen.google_http import (
+    request as google_request,
+    response_json as google_response_json,
+)
 from zippergen.connectors import requirement_binding
 from zippergen.google_auth import (
     GoogleConnectorError,
@@ -88,7 +92,7 @@ class GmailMailbox:
     requirement: str
     account: str
     query: str
-    credential_json: str
+    credential_json: str = field(repr=False)
     access: str = "read-write"
 
     @classmethod
@@ -129,18 +133,17 @@ class GmailMailbox:
 
     @staticmethod
     def _response_json(response, operation: str) -> dict[str, Any]:
-        try:
-            response.raise_for_status()
-            value = response.json()
-        except Exception as exc:
-            detail = getattr(response, "text", "") or str(exc)
-            raise GmailError(f"Gmail {operation} failed: {detail}") from exc
-        if not isinstance(value, dict):
-            raise GmailError(f"Gmail {operation} returned an invalid response.")
-        return value
+        return google_response_json(
+            response, operation, service="Gmail", error=GmailError,
+        )
+
+    def _request(self, method: str, url: str, **kwargs):
+        return google_request(
+            self._session(), method, url, service="Gmail", error=GmailError, **kwargs,
+        )
 
     def inspect(self) -> dict[str, object]:
-        response = self._session().get(self._url("profile"), timeout=10)
+        response = self._request("get", self._url("profile"), timeout=10)
         value = self._response_json(response, "configuration check")
         return {
             "email": str(value.get("emailAddress") or self.account),
@@ -149,7 +152,8 @@ class GmailMailbox:
         }
 
     def _list(self, *, maximum: int = 1) -> list[dict[str, Any]]:
-        response = self._session().get(
+        response = self._request(
+            "get",
             self._url("messages"),
             params={"q": self.query, "maxResults": maximum},
             timeout=20,
@@ -159,7 +163,8 @@ class GmailMailbox:
         return [dict(item) for item in messages if isinstance(item, dict)]
 
     def count_unread(self) -> int:
-        response = self._session().get(
+        response = self._request(
+            "get",
             self._url("messages"),
             params={"q": self.query, "maxResults": 1},
             timeout=20,
@@ -172,7 +177,8 @@ class GmailMailbox:
         if not messages:
             return None
         message_id = str(messages[0].get("id") or "")
-        response = self._session().get(
+        response = self._request(
+            "get",
             self._url(f"messages/{quote(message_id, safe='')}"),
             params={"format": "full"},
             timeout=20,
@@ -248,7 +254,8 @@ class GmailMailbox:
         thread_id = str(meta.get("thread_id") or "")
         if thread_id:
             message["threadId"] = thread_id
-        response = self._session().post(
+        response = self._request(
+            "post",
             self._url("drafts"),
             json={"message": message},
             timeout=20,
@@ -267,7 +274,8 @@ class GmailMailbox:
         thread_id = str(meta.get("thread_id") or "")
         if thread_id:
             message["threadId"] = thread_id
-        response = self._session().post(
+        response = self._request(
+            "post",
             self._url("messages/send"),
             json=message,
             timeout=20,
@@ -284,7 +292,8 @@ class GmailMailbox:
         )
         if not message_id:
             raise GmailError("Cannot mark a Gmail message without its ID.")
-        response = self._session().post(
+        response = self._request(
+            "post",
             self._url(f"messages/{quote(message_id, safe='')}/modify"),
             json={"removeLabelIds": ["UNREAD"]},
             timeout=20,

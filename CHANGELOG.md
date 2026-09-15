@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Google and Telegram connector errors no longer include upstream response
+  bodies or chained transport exceptions in ordinary diagnostics. Google
+  credential fields are excluded from object representations. HTTP status
+  codes remain available for troubleshooting.
+- Google Sheets rejects malformed row collections before a keyed update, so
+  skipping a bad row cannot shift the write to another row. Table replacement
+  validates its complete payload before clearing existing cells. Replacement
+  still uses two requests, and keyed upserts still require a single writer.
+
 - Added a Google Calendar connector for reading events and creating single timed
   events with stable request IDs for recovery. It shares Google authorization,
   connector configuration and deployment wiring. Includes an approval example.

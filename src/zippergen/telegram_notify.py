@@ -77,18 +77,29 @@ class TelegramBotClient:
             ) as resp:
                 payload = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")
+            status = exc.code
+            exc.close()
             raise TelegramAPIError(
-                f"Telegram {method} failed: HTTP {exc.code} {detail}"
-            ) from exc
+                f"Telegram {method} failed: HTTP {status}. "
+                "Check bot authorization and chat access."
+            ) from None
         except (OSError, ValueError) as exc:
             # A refused connection, a DNS failure, a socket timeout and a
             # malformed body are all one thing to every caller: this call did
             # not work. Naming them here, where the HTTP lives, keeps every
             # caller free of a list that would drift as the failures do.
-            raise TelegramAPIError(f"Telegram {method} failed: {exc}") from exc
+            raise TelegramAPIError(
+                f"Telegram {method} failed ({type(exc).__name__}). "
+                "Check connectivity and bot authorization."
+            ) from None
+        if not isinstance(payload, dict):
+            raise TelegramAPIError(f"Telegram {method} returned an invalid response.")
         if not payload.get("ok", False):
-            raise TelegramAPIError(f"Telegram {method} failed: {payload}")
+            code = payload.get("error_code")
+            detail = f" (code {code})" if type(code) is int else ""
+            raise TelegramAPIError(
+                f"Telegram {method} failed{detail}. Check bot authorization and chat access."
+            )
         return payload
 
     def send_message(self, chat_id: str, text: str, reply_markup: dict | None = None) -> dict:

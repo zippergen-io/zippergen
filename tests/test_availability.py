@@ -287,13 +287,14 @@ def missing_receive() -> str:
     assert "value" in check["detail"]
 
 
-def test_cli_run_reports_the_violation_without_a_traceback(tmp_path, capsys):
+def test_cli_run_reports_the_violation_without_a_traceback(tmp_path, capsys, monkeypatch):
     """A run refuses an invalid workflow the way validation reports it.
 
     The rule lives in one place; the CLI only has to present it. An author
     mistake must read as a message, not as an interpreter stack trace.
     """
 
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "site"))
     source = tmp_path / "missing_receive_run.py"
     source.write_text(
         """\

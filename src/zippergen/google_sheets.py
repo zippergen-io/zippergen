@@ -10,12 +10,16 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 
+from zippergen.google_http import (
+    request as google_request,
+    response_json as google_response_json,
+)
 from zippergen.connectors import requirement_binding
 from zippergen.google_auth import (
     GOOGLE_SHEETS_SCOPE,
@@ -100,7 +104,7 @@ class GoogleSheetsTable:
     requirement: str
     spreadsheet_id: str
     tab: str
-    credential_json: str
+    credential_json: str = field(repr=False)
     access: str = "read-write"
 
     @classmethod
@@ -149,23 +153,19 @@ class GoogleSheetsTable:
 
     @staticmethod
     def _response_json(response, operation: str) -> dict[str, object]:
-        try:
-            response.raise_for_status()
-            value = response.json()
-        except Exception as exc:
-            detail = getattr(response, "text", "") or str(exc)
-            raise GoogleSheetsError(
-                f"Google Sheets {operation} failed: {detail}"
-            ) from exc
-        if not isinstance(value, dict):
-            raise GoogleSheetsError(
-                f"Google Sheets {operation} returned an invalid response."
-            )
-        return value
+        return google_response_json(
+            response, operation, service="Google Sheets", error=GoogleSheetsError,
+        )
+
+    def _request(self, method: str, url: str, **kwargs):
+        return google_request(
+            self._session(), method, url, service="Google Sheets", error=GoogleSheetsError, **kwargs,
+        )
 
     def inspect(self) -> dict[str, object]:
         spreadsheet = quote(self.spreadsheet_id, safe="")
-        response = self._session().get(
+        response = self._request(
+            "get",
             f"{_SHEETS_API}/{spreadsheet}",
             params={"fields": "properties.title,sheets.properties.title"},
             timeout=10,
@@ -197,14 +197,15 @@ class GoogleSheetsTable:
         fields = _normalise_columns(columns)
         end = _column_letter(len(fields))
         range_text = f"{_quote_tab(self.tab)}!A:{end}"
-        response = self._session().get(
+        response = self._request(
+            "get",
             self._values_url(range_text),
             params={"majorDimension": "ROWS", "valueRenderOption": "UNFORMATTED_VALUE"},
             timeout=20,
         )
         value = self._response_json(response, "read")
-        rows = value.get("values") or []
-        if not isinstance(rows, list):
+        rows = value.get("values", [])
+        if not isinstance(rows, list) or any(not isinstance(row, list) for row in rows):
             raise GoogleSheetsError("Google Sheets returned malformed row data.")
         if not rows:
             return []
@@ -216,8 +217,6 @@ class GoogleSheetsTable:
             )
         result: list[dict[str, object]] = []
         for raw_row in rows[1:]:
-            if not isinstance(raw_row, list):
-                continue
             result.append({
                 field: raw_row[index] if index < len(raw_row) else ""
                 for index, field in enumerate(fields)
@@ -227,7 +226,8 @@ class GoogleSheetsTable:
     def _update(self, range_text: str, values: list[list[object]]) -> None:
         self._require_write("update")
         payload: Any = {"majorDimension": "ROWS", "values": values}
-        response = self._session().put(
+        response = self._request(
+            "put",
             self._values_url(range_text),
             params={"valueInputOption": "RAW"},
             json=payload,
@@ -238,7 +238,8 @@ class GoogleSheetsTable:
     def _append(self, range_text: str, values: list[list[object]]) -> None:
         self._require_write("append")
         payload: Any = {"majorDimension": "ROWS", "values": values}
-        response = self._session().post(
+        response = self._request(
+            "post",
             self._values_url(range_text, ":append"),
             params={
                 "valueInputOption": "RAW",
@@ -255,18 +256,18 @@ class GoogleSheetsTable:
         *,
         columns: Sequence[str],
     ) -> None:
-        """Replace the managed table while keeping its explicit schema."""
+        """Replace the managed table while keeping its explicit schema.
+
+        All values are validated before clearing. Clear and update are still
+        separate requests: a remote failure between them can leave an empty
+        table. Retry with the same replacement data to finish the operation.
+        """
 
         self._require_write("replacement")
         fields = _normalise_columns(columns)
         end = _column_letter(len(fields))
         range_text = f"{_quote_tab(self.tab)}!A:{end}"
-        response = self._session().post(
-            self._values_url(range_text, ":clear"),
-            json={},
-            timeout=20,
-        )
-        self._response_json(response, "clear")
+        # Validate the entire replacement before the first destructive call.
         values = [
             list(fields),
             *[
@@ -274,6 +275,14 @@ class GoogleSheetsTable:
                 for row in rows
             ],
         ]
+        json.dumps(values, allow_nan=False)
+        response = self._request(
+            "post",
+            self._values_url(range_text, ":clear"),
+            json={},
+            timeout=20,
+        )
+        self._response_json(response, "clear")
         self._update(
             f"{_quote_tab(self.tab)}!A1:{end}{len(values)}",
             values,
@@ -288,11 +297,12 @@ class GoogleSheetsTable:
     ) -> str:
         """Create or replace one keyed row.
 
-        The stable key makes retry after a crash safe. A blind append cannot
-        provide that property because the Sheets append API has no idempotency
-        key.
+        A stable key lets a sequential retry find a previously appended row.
+        This read-then-write sequence is not atomic. Concurrent writers can
+        still append duplicates, so the table needs a single writer.
         """
 
+        self._require_write("upsert")
         fields = _normalise_columns(columns)
         if key_field not in fields:
             raise ValueError(

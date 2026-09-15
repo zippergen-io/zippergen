@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -48,7 +48,7 @@ class GoogleCalendar:
 
     requirement: str
     calendar_id: str
-    credential_json: str
+    credential_json: str = field(repr=False)
     access: str = "read-only"
 
     def __post_init__(self):

@@ -116,9 +116,10 @@ def test_defaults_and_loaded_manifests_have_the_same_keys(tmp_path) -> None:
     assert present["exists"] is True
 
 
-def test_a_round_trip_preserves_every_family(tmp_path) -> None:
+def test_a_round_trip_preserves_every_family(tmp_path, monkeypatch) -> None:
     """What the writer emits is what the loader reads back."""
 
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "site"))
     workspace = Workspace(str(tmp_path))
     workspace.initialize_project(name="shape")
     workspace.write_configuration_values({"task": "fix the bug", "rounds": 4})

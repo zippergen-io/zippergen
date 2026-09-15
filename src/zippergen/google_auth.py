@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -59,7 +59,7 @@ class GoogleConnectorError(RuntimeError):
 class GoogleAuthorization:
     """Portable result of a browser-side Google authorization."""
 
-    authorized_user_json: str
+    authorized_user_json: str = field(repr=False)
     granted_scopes: tuple[str, ...]
     client_id: str
     expiry: str | None = None
@@ -262,8 +262,11 @@ def authorize_google_client_result(
             access_type="offline",
             prompt="consent",
         )
-    except Exception as exc:
-        raise GoogleConnectorError(f"Google authorization failed: {exc}") from exc
+    except Exception:
+        raise GoogleConnectorError(
+            "Google authorization failed. Check the OAuth client configuration, "
+            "requested permissions and connection, then try again."
+        ) from None
     # OAuth servers may omit ``scope`` only when the granted set is identical
     # to the requested set. Preserve the explicit grant when Google returns it
     # because Credentials.to_json() serializes requested scopes instead.
@@ -467,19 +470,27 @@ def credentials_from_json(value: str, *, scopes: Iterable[str]):
                         if not google_scopes_cover(recorded, (scope,))
                     )
                 )
-                raise ValueError(
+                raise GoogleConnectorError(
                     "stored credential does not cover required scope(s): "
                     + missing
                 )
+    except GoogleConnectorError:
+        raise
+    except Exception:
+        raise GoogleConnectorError(
+            "Google OAuth credential data is invalid. Authorize the connection again."
+        ) from None
+    try:
         credentials = credentials_type.from_authorized_user_info(
             info,
         )
         if not credentials.valid:
             credentials.refresh(request_type())
-    except Exception as exc:
+    except Exception:
         raise GoogleConnectorError(
-            f"Google OAuth credential is unavailable: {exc}"
-        ) from exc
+            "Google OAuth credential is unavailable. Check the connection and "
+            "authorize it again if access has expired or been revoked."
+        ) from None
     return credentials
 
 
