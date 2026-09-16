@@ -14,11 +14,13 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import time
+from contextlib import closing
 
 import pytest
 
 from zippergen.deployment_platform import slug
-from zippergen.store import SCHEMA_VERSION
+from zippergen.store import SCHEMA_VERSION, load_workflow_result, open_store
 from zippergen.workspace import Workspace
 
 
@@ -85,6 +87,11 @@ def test_real_systemd_stop_upgrade_reset_start(tmp_path):
     name = workspace.directory.name
 
     try:
+        validated = _run(project, environment, "validate")
+        assert validated.returncode == 0, validated.stdout + validated.stderr
+        inspected = _run(project, environment, "show", "--detail", "full")
+        assert inspected.returncode == 0, inspected.stdout + inspected.stderr
+
         deployed = _run(project, environment, "deploy", "--yes")
         assert deployed.returncode == 0, deployed.stdout + deployed.stderr
 
@@ -117,6 +124,16 @@ def test_real_systemd_stop_upgrade_reset_start(tmp_path):
         assert redeployed.returncode == 0, redeployed.stdout + redeployed.stderr
         started = _run(project, environment, "deploy", "start")
         assert started.returncode == 0, started.stdout + started.stderr
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            with closing(open_store(str(store))) as connection:
+                result = load_workflow_result(connection, "lifecycle")
+            if result == "done":
+                break
+            time.sleep(0.2)
+        else:
+            status = _run(project, environment, "deploy", "status")
+            pytest.fail("Restarted workflow did not finish: " + status.stdout + status.stderr)
     finally:
         _run(project, environment, "deploy", "stop")
         _run(project, environment, "deploy", "remove", "--purge", "--yes")

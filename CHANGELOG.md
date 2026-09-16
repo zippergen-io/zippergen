@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+## 0.1.0a4 - 2026-09-16
+
+This alpha adds durable work pools, CPL context across pool handoffs and a
+Google Calendar connector. It also improves deployment recovery, approval
+routing and credential handling.
+
+Security fixes:
+
+- The Google extra requires `cryptography>=50.0.0`, which includes the fix for
+  [GHSA-g6cj-pr64-35w5](https://github.com/pyca/cryptography/security/advisories/GHSA-g6cj-pr64-35w5).
+  The affected PKCS#7 decryption APIs are not used by ZipperGen's connectors.
+- Execution locks reject symbolic links, multiply linked files and special
+  files before changing their permissions or contents.
+- Google authorization handoffs require refreshable credentials, matching
+  client IDs and valid scope metadata before replacing saved credentials.
+  Malformed encoded data and checksums are rejected with a controlled error.
+- Assistant environment filtering now lists standard locale variables
+  explicitly. Arbitrary variables beginning with `LC_` are no longer inherited.
+
+Security limits:
+
+- Workflows and deployment setup are trusted Python code. This release does
+  not provide a sandbox for arbitrary third-party workflows.
+- Assistant environment filtering does not isolate credential files readable
+  by the same operating-system account. Stronger separation requires an
+  assistant execution service, account or container with restricted file access.
+- Google handoff encoding is not encryption, and its checksum is not a
+  signature. Accept a handoff only from your own trusted authorization session.
+- External effects can repeat after a crash unless the external service
+  supports idempotency. Private files use filesystem permissions, not encryption
+  supplied by ZipperGen. See [security notes](docs/security.md).
+
+Upgrade notes:
+
+- These security fixes do not change workflow syntax, the durable-store schema
+  or deployment command meanings. They do not require resetting saved state.
+- An installed package upgrade does not replace an existing deployment's
+  managed runtime. Stop the deployment and run `zg deploy` to apply the new
+  runtime. Compatible saved state is preserved.
+- Protocol changes still require a compatibility check. In particular, the
+  updated email approval example and earlier unreleased pool workflows have
+  the compatibility limits described below. Do not reset a live workflow
+  without first deciding how to handle pending work and external effects.
+
+Other changes:
+
 - Google and Telegram connector errors no longer include upstream response
   bodies or chained transport exceptions in ordinary diagnostics. Google
   credential fields are excluded from object representations. HTTP status
