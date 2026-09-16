@@ -323,7 +323,13 @@ zg assistant check
 Assign `Maintainer.action_name` when only one action needs a different
 backend. The `@assistant` declaration still controls filesystem access,
 external tools, and shell access. Codex and Claude use their own login.
-ZipperGen does not pass workflow model keys or connector credentials to them.
+ZipperGen removes workflow model keys and connector credentials from their
+environment. This does not prevent access to files readable by the same
+operating-system account. A read-only setting limits changes, not which
+secrets the assistant can read. Stronger separation requires an assistant
+execution service, account or container that cannot read the workflow's
+credentials. ZipperGen does not provide this separation automatically.
+See the [security notes](docs/security.md).
 
 ## Models and repeatable tests
 

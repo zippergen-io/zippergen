@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import json
 
 import pytest
@@ -18,6 +20,51 @@ from zippergen.google_auth import (
     normalize_google_client_json,
     parse_google_scopes,
 )
+
+
+def _checked_handoff(document):
+    payload = json.dumps(document).encode()
+    encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    return f"zg-google-v1.{encoded}.{hashlib.sha256(payload).hexdigest()[:16]}"
+
+
+@pytest.mark.parametrize("fault", [
+    "client_mismatch", "empty_refresh", "missing_secret", "object_scope",
+    "empty_scopes", "non_string_client", "unicode_checksum", "invalid_base64",
+])
+def test_handoff_rejects_invalid_data_even_with_a_matching_checksum(fault):
+    from zippergen.google_auth import GoogleConnectorError
+
+    document = {
+        "credential": {
+            "client_id": "client", "client_secret": "synthetic-secret",
+            "refresh_token": "synthetic-refresh",
+        },
+        "client_id": "client",
+        "granted_scopes": [GOOGLE_GMAIL_READONLY_SCOPE],
+    }
+    if fault == "client_mismatch":
+        document["credential"]["client_id"] = "other-client"
+    elif fault == "empty_refresh":
+        document["credential"]["refresh_token"] = ""
+    elif fault == "missing_secret":
+        del document["credential"]["client_secret"]
+    elif fault == "object_scope":
+        document["granted_scopes"] = [{"scope": "synthetic-secret"}]
+    elif fault == "empty_scopes":
+        document["granted_scopes"] = []
+    elif fault == "non_string_client":
+        document["client_id"] = {"id": "client"}
+    encoded = _checked_handoff(document)
+    if fault == "unicode_checksum":
+        encoded = encoded.rsplit(".", 1)[0] + ".é"
+    elif fault == "invalid_base64":
+        prefix, payload, checksum = encoded.split(".")
+        encoded = f"{prefix}.!{payload}.{checksum}"
+
+    with pytest.raises(GoogleConnectorError) as caught:
+        decode_google_authorization(encoded)
+    assert "synthetic-secret" not in str(caught.value)
 
 
 def test_google_install_hint_uses_the_published_extra():
@@ -120,6 +167,7 @@ def test_google_authorization_handoff_is_checked_and_round_trips():
     result = GoogleAuthorization(
         authorized_user_json=(
             '{"client_id":"example.apps.googleusercontent.com",'
+            '"client_secret":"synthetic-secret",'
             '"refresh_token":"private-token","token_uri":"https://token"}'
         ),
         granted_scopes=(
@@ -143,6 +191,7 @@ def test_google_authorization_handoff_rejects_truncation():
         GoogleAuthorization(
             authorized_user_json=(
                 '{"client_id":"example.apps.googleusercontent.com",'
+                '"client_secret":"synthetic-secret",'
                 '"refresh_token":"private-token"}'
             ),
             granted_scopes=(GOOGLE_GMAIL_READONLY_SCOPE,),
@@ -151,7 +200,8 @@ def test_google_authorization_handoff_rejects_truncation():
     )
 
     with pytest.raises(RuntimeError, match="truncated or changed"):
-        decode_google_authorization(encoded[:-1] + "0")
+        changed = "0" if encoded[-1] != "0" else "1"
+        decode_google_authorization(encoded[:-1] + changed)
 
 
 def test_google_refresh_uses_existing_grant_without_resending_scopes(

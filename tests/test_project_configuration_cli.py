@@ -895,6 +895,7 @@ def _fake_google_browser(monkeypatch, tmp_path):
             authorized_user_json=json.dumps({
                 "client_id": "example.apps.googleusercontent.com",
                 "refresh_token": "private-refresh-token",
+                "client_secret": "private-client-secret",
             }),
             granted_scopes=tuple(scopes),
             client_id="example.apps.googleusercontent.com",
@@ -941,6 +942,39 @@ def test_handoff_still_prints_for_another_computer(
     output = capsys.readouterr().out
     assert "provider accept" in output
     assert workspace.provider_secret("google-work", "authorized_user_json") is None
+
+
+@pytest.mark.parametrize("fault", ["missing_refresh", "client_mismatch", "checksum"])
+def test_invalid_google_handoff_preserves_saved_authorization(
+    project, monkeypatch, capsys, fault
+):
+    from zippergen.google_auth import GoogleAuthorization, encode_google_authorization
+
+    _root, workspace = project
+    workspace.save_provider_secret("google-work", "authorized_user_json", "saved-credential")
+    before_secret = workspace.secrets_path.read_bytes()
+    before_profile = workspace.provider_connections()
+    credential = {"client_id": "client", "client_secret": "synthetic-secret"}
+    if fault != "missing_refresh":
+        credential["refresh_token"] = "synthetic-refresh"
+    result = GoogleAuthorization(
+        authorized_user_json=json.dumps(credential),
+        client_id="other" if fault == "client_mismatch" else "client",
+        granted_scopes=("https://www.googleapis.com/auth/gmail.readonly",),
+    )
+    handoff = encode_google_authorization(result)
+    if fault == "checksum":
+        handoff = handoff.rsplit(".", 1)[0] + ".é"
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: handoff)
+
+    with pytest.raises(SystemExit, match="not a valid authorization result") as caught:
+        main(["provider", "accept", "google-work"])
+
+    assert workspace.secrets_path.read_bytes() == before_secret
+    assert workspace.provider_connections() == before_profile
+    output = str(caught.value) + str(capsys.readouterr())
+    assert "synthetic-secret" not in output
+    assert "synthetic-refresh" not in output
 
 
 def test_renaming_a_provider_connection_takes_its_credential_with_it(

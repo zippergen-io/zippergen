@@ -1080,6 +1080,7 @@ def test_provider_authorize_google_emits_checked_private_handoff(
             authorized_user_json=json.dumps({
                 "client_id": "example.apps.googleusercontent.com",
                 "refresh_token": "private-refresh-token",
+                "client_secret": "private-client-secret",
             }),
             granted_scopes=tuple(scopes),
             client_id="example.apps.googleusercontent.com",

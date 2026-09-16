@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -368,7 +369,11 @@ def encode_google_authorization(result: GoogleAuthorization) -> str:
 
 
 def decode_google_authorization(value: str) -> GoogleAuthorization:
-    """Decode and validate one private browser-to-CLI handoff."""
+    """Validate handoff structure, not its issuer or the token's live grants.
+
+    The checksum detects copy errors. It is not a signature, and the encoded
+    credential is not encrypted. Only accept a handoff from a trusted source.
+    """
 
     parts = value.strip().split(".")
     if len(parts) != 3 or parts[0] != _GOOGLE_AUTHORIZATION_PREFIX:
@@ -377,9 +382,15 @@ def decode_google_authorization(value: str) -> GoogleAuthorization:
             "Run the displayed command again and paste its complete final line."
         )
     encoded, expected_checksum = parts[1:]
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", encoded) or not re.fullmatch(
+        r"[0-9a-f]{16}", expected_checksum
+    ):
+        raise GoogleConnectorError(
+            "The Google authorization result is truncated or changed."
+        )
     try:
-        payload = base64.urlsafe_b64decode(
-            encoded + "=" * (-len(encoded) % 4)
+        payload = base64.b64decode(
+            encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
         )
     except (ValueError, TypeError) as exc:
         raise GoogleConnectorError(
@@ -403,14 +414,31 @@ def decode_google_authorization(value: str) -> GoogleAuthorization:
         )
     credential = document.get("credential")
     granted_scopes = document.get("granted_scopes")
-    client_id = str(document.get("client_id") or "")
+    client_id = document.get("client_id")
     if (
         not isinstance(credential, dict)
         or not isinstance(granted_scopes, list)
-        or not client_id
+        or not granted_scopes
+        or any(
+            not isinstance(scope, str) or not scope.strip()
+            for scope in granted_scopes
+        )
+        or not isinstance(client_id, str)
+        or not client_id.strip()
     ):
         raise GoogleConnectorError(
             "The Google authorization result is incomplete."
+        )
+    if any(
+        not isinstance(credential.get(name), str) or not credential[name].strip()
+        for name in ("client_id", "client_secret", "refresh_token")
+    ):
+        raise GoogleConnectorError(
+            "The Google authorization result is missing refreshable credentials."
+        )
+    if credential["client_id"] != client_id:
+        raise GoogleConnectorError(
+            "The Google authorization result contains inconsistent client IDs."
         )
     return GoogleAuthorization(
         authorized_user_json=json.dumps(

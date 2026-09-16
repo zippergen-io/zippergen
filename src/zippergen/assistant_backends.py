@@ -42,6 +42,19 @@ _ASSISTANT_BASE_ENVIRONMENT = {
     "HTTPS_PROXY",
     "HTTP_PROXY",
     "LANG",
+    "LC_ALL",
+    "LC_ADDRESS",
+    "LC_COLLATE",
+    "LC_CTYPE",
+    "LC_IDENTIFICATION",
+    "LC_MEASUREMENT",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NAME",
+    "LC_NUMERIC",
+    "LC_PAPER",
+    "LC_TELEPHONE",
+    "LC_TIME",
     "LOGNAME",
     "NO_COLOR",
     "NO_PROXY",
@@ -240,7 +253,7 @@ class AssistantBackendSpec:
     #: What a person calls it in an error message.
     label: str
     #: Environment variables naming where this CLI keeps its own login. No
-    #: credential is ever forwarded; see `_assistant_environment`.
+    #: workflow API key is forwarded here; see `_assistant_environment`.
     login_environment: frozenset[str]
     #: Options ZipperGen relies on; `check_cli_assistant` verifies each.
     required_options: tuple[str, ...]
@@ -299,7 +312,7 @@ _BACKENDS = {spec.name: spec for spec in ASSISTANT_BACKEND_SPECS}
 
 
 #: Derived: where each CLI keeps the login it established for itself, and
-#: nothing more. No credential is forwarded -- see `_assistant_environment`.
+#: nothing more. Workflow API keys are filtered by `_assistant_environment`.
 _ASSISTANT_AUTH_ENVIRONMENT = {
     spec.name: set(spec.login_environment) for spec in ASSISTANT_BACKEND_SPECS
 }
@@ -318,15 +331,18 @@ def _assistant_environment(backend: str) -> dict[str, str]:
     uses. Assistant actions process untrusted workflow values, so inheriting
     that process environment would cross an unnecessary security boundary.
     Keep only ordinary process settings and the path where the selected
-    assistant keeps its own login. No credential is passed on: the assistant
-    authenticates exactly as it would if this user ran it directly.
+    assistant keeps its own login. Workflow API keys are not inherited.
+
+    This is not filesystem isolation. The child still runs as the same OS
+    user, and permitted settings such as proxy URLs may contain credentials.
+    A working directory or read-only mode does not establish a read boundary.
     """
 
     allowed = _ASSISTANT_BASE_ENVIRONMENT | _ASSISTANT_AUTH_ENVIRONMENT[backend]
     return {
         name: value
         for name, value in os.environ.items()
-        if name in allowed or name.startswith("LC_")
+        if name in allowed
     }
 
 

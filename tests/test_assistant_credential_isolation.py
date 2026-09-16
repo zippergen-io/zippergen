@@ -1,4 +1,4 @@
-"""No workflow credential reaches an assistant subprocess.
+"""Workflow credential environment variables are not inherited by assistants.
 
 An assistant action reads workflow values, which may come from untrusted
 input, and runs a CLI with shell access. A workflow process holds credentials
@@ -7,8 +7,8 @@ for every model and connector it routes to, and two of those names --
 CLIs read. Forwarding them both crossed the boundary and silently overrode the
 login the operator established, spending the wrong account.
 
-The rule is stated once here as a cross product: every way a workflow can hold
-a credential, against every assistant backend.
+This checks environment inheritance, not file access by the same Unix user.
+Allowed process settings such as proxy URLs can themselves contain secrets.
 """
 
 import os
@@ -38,6 +38,9 @@ WORKFLOW_CREDENTIALS = (
     "OPENAI_BASE_URL",
     "TELEGRAM_BOT_TOKEN",
     "ZIPPERGEN_CONNECTORS_JSON",
+    "ZIPPERGEN_HOME",
+    "LC_WORKFLOW_TOKEN",
+    "CUSTOM_PROVIDER_SECRET",
 )
 
 #: Where each CLI keeps the login it established for itself. These must
@@ -97,3 +100,12 @@ def test_an_unrelated_setting_still_passes_through(
     monkeypatch.setenv("PATH", "/usr/bin")
     assert _assistant_environment(backend)["PATH"] == "/usr/bin"
     assert "ZIPPERGEN_SENTINEL_UNKNOWN" not in os.environ
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_standard_locale_settings_survive(monkeypatch, backend):
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    monkeypatch.setenv("LC_CTYPE", "UTF-8")
+    child = _assistant_environment(backend)
+    assert child["LC_ALL"] == "C.UTF-8"
+    assert child["LC_CTYPE"] == "UTF-8"

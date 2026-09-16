@@ -349,6 +349,68 @@ def test_telegram_callback_rejects_an_untrusted_group_member(tmp_path):
     }]
 
 
+def test_old_approval_cannot_settle_the_same_task_in_a_fresh_store(tmp_path):
+    """Reset replaces the store, but task IDs can recur in the next execution."""
+
+    notifiers = []
+    tokens = []
+    paths = [tmp_path / "archived.sqlite", tmp_path / "fresh.sqlite"]
+    for path in paths:
+        _create_task(path, task_id="task-1")
+        client = FakeTelegramClient()
+        notifier = TelegramNotifier(str(path), client, chat_id="123", allowed_user_id="42")
+        notifier.send_pending_once()
+        tokens.append(client.sent[0]["reply_markup"]["inline_keyboard"][0][0][
+            "callback_data"
+        ].split(":", 2)[2])
+        notifiers.append(notifier)
+    assert tokens[0] != tokens[1]
+
+    def update(token, answer="yes"):
+        return {"callback_query": {
+            "id": "callback", "from": {"id": 42}, "data": f"zg:{answer}:{token}",
+            "message": {"message_id": 1, "chat": {"id": 123}},
+        }}
+
+    assert notifiers[0].process_update(update(tokens[0])) == SETTLED
+    assert notifiers[1].process_update(update(tokens[0])) == NOT_MINE
+    conn = open_store(str(paths[1]))
+    try:
+        assert load_human_task(conn, "task-1")["status"] == "pending"
+        assert load_human_task_token(conn, tokens[1])["used_at"] is None
+    finally:
+        conn.close()
+    assert notifiers[1].process_update(update(tokens[1])) == SETTLED
+    assert notifiers[1].process_update(update(tokens[1], "no")) == SETTLED
+    conn = open_store(str(paths[1]))
+    try:
+        assert load_human_task(conn, "task-1")["result"] == {"approved": True}
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("chat,actor", [(456, {"id": 42}), (123, None)])
+def test_owned_callback_requires_the_right_chat_and_an_identified_actor(tmp_path, chat, actor):
+    path = tmp_path / "approval.sqlite"
+    _create_task(path)
+    client = FakeTelegramClient()
+    notifier = TelegramNotifier(str(path), client, chat_id="123", allowed_user_id="42")
+    notifier.send_pending_once()
+    token = client.sent[0]["reply_markup"]["inline_keyboard"][0][0][
+        "callback_data"
+    ].split(":", 2)[2]
+    notifier.process_update({"callback_query": {
+        "id": "callback", "from": actor, "data": f"zg:yes:{token}",
+        "message": {"message_id": 1, "chat": {"id": chat}},
+    }})
+    conn = open_store(str(path))
+    try:
+        assert load_human_task(conn, "task-1")["status"] == "pending"
+        assert load_human_task_token(conn, token)["used_at"] is None
+    finally:
+        conn.close()
+
+
 def test_expired_callback_ack_does_not_undo_answer_or_block_offset(tmp_path):
     store_path = tmp_path / "expired-callback.sqlite"
     _create_task(store_path)

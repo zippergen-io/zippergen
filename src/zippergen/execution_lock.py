@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -71,14 +72,34 @@ def _unlock(fd: int) -> None:
     fcntl.flock(fd, fcntl.LOCK_UN)
 
 
+def _open_lock(path: Path) -> int:
+    """Open a single regular file without following a substituted symlink.
+
+    The parent directory must still be controlled by the operator. Checking
+    the open descriptor avoids changing a linked target's mode or contents.
+    """
+
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(
+        path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600
+    )
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError("Execution lock must be a regular file with one link.")
+        os.fchmod(fd, 0o600)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def active_execution(path: str | Path) -> ActiveExecution | None:
     """Return the current owner, or ``None`` when the project is idle."""
 
     lock_path = Path(path)
-    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = _open_lock(lock_path)
     try:
-        os.fchmod(fd, 0o600)
         if not _try_lock(fd):
             return _read_active(fd)
         _unlock(fd)
@@ -96,11 +117,9 @@ def execution_lock(
     """Hold one project's execution lock until this process leaves the block."""
 
     lock_path = Path(path)
-    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = _open_lock(lock_path)
     locked = False
     try:
-        os.fchmod(fd, 0o600)
         locked = _try_lock(fd)
         if not locked:
             raise ExecutionLockError(_read_active(fd))
