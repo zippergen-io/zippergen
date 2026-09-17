@@ -312,6 +312,16 @@ are all guided. Reusing a name updates that configuration and presents its
 current values as defaults. Scripts and coding agents should pass every value
 explicitly.
 
+For a local provider, guided model setup shows the server address and offers
+the models returned by that server. It can also assign the configuration to a
+participant. If the server cannot be reached, it explains where a server or SSH
+tunnel needs to run and lets you retry or enter a model name manually. Existing
+assignments are kept when you update their configuration.
+
+Model discovery does not generate text or check the context window. Use
+`zg model check NAME` to test generation. Fully specified configuration commands
+remain offline, so scripts can prepare settings before the server is available.
+
 For an `@assistant` action, choose Codex or Claude with a named configuration:
 
 ```bash

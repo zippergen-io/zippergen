@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Guided local model setup shows the server URL, offers available models and
+  participant assignment, and explains connection failures and SSH tunnels.
+  Explicit configuration commands remain offline. The workflow skill now starts
+  from the user's existing model server and separates server setup from routing.
+- Expanded the workflow skill with Gmail, Google Sheets, Calendar and Telegram
+  connector signatures and return shapes, loop initialization guidance, and a
+  runnable crash-recovery test using fake services. Clarified when successful
+  checks need to be repeated.
+
 ## 0.1.0a4 - 2026-09-16
 
 This alpha adds durable work pools, CPL context across pool handoffs and a

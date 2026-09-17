@@ -156,6 +156,61 @@ command. `--llm-for PARTICIPANT_OR_ACTION=SPEC` is a narrower temporary
 override. API keys remain in the environment or private site storage, never
 in this file.
 
+### Local model setup
+
+Start from the user's existing server and model. A `local` provider connects
+to an OpenAI-compatible API, including Ollama or LM Studio. The provider's
+base URL selects the server. The model name selects a model on that server.
+The model configuration name is a project alias used by assignments. Updating
+that alias keeps the assignments that already reference it.
+
+In a human terminal, `zg model configure` shows the configured local endpoint
+and requests its `/models` list before asking for a model name. It offers the
+returned names and accepts manual names as well. If discovery fails, the user
+can start the server or tunnel and retry, continue manually, or cancel. The
+dialogue also offers participant assignment when the configuration has no
+existing assignments. Enter skips that step. Fully specified commands remain
+offline and never change assignments implicitly.
+
+`zg provider check CONNECTION` can check the local server's model list without
+calling a model. `zg model check NAME` sends a small generation request using
+the configured settings. Neither check proves that an application prompt fits
+the context window or produces a correct answer.
+
+For a remote GPU server, first establish which computer runs ZipperGen, the
+working API URL, and whether the user already uses an SSH tunnel. `127.0.0.1`
+and `localhost` refer to the computer running the command. Run a local SSH
+forward on that computer, not inside the remote SSH session. For example, if
+the remote server is already listening on port 11434, replace `YOUR_GPU_HOST`
+with the user's SSH host or alias and run this on the computer running
+ZipperGen:
+
+```bash
+ssh -fN -o ExitOnForwardFailure=yes -L 11434:127.0.0.1:11434 YOUR_GPU_HOST
+```
+
+This backgrounds the tunnel after authentication. Reuse a working tunnel
+instead of starting another on the same local port. Then, in the workflow
+directory on that same computer:
+
+```bash
+zg provider configure local-main local --base-url http://127.0.0.1:11434/v1
+zg model configure
+```
+
+Use the actual ports and endpoint from the user's setup. Do not infer the
+server software from its port or start a tunnel automatically. A manual tunnel
+can disconnect and is not a service that survives restart. For persistent
+deployment, establish a connection that is available to the deployed service.
+
+Do not generate an Ollama Modelfile by default. First check the existing
+context setting against the workload. `max_tokens` limits generated output,
+not the input context window. If a custom server configuration is needed,
+explain why, identify the machine for every command, and include any file
+transfer. The current OpenAI-compatible backend does not configure Ollama's
+context window. Its optional `--idle-timeout` unload operation is specific to
+Ollama, so do not enable it for other compatible servers.
+
 ## Action selection
 
 Choose an action by semantics, not convenience:
@@ -474,7 +529,10 @@ configurations, assignments, and bindings are stored in the committed
 private in `ZIPPERGEN_HOME`, while semantic snapshots and full
 views retain the logical kind, participant, access, capabilities, and each
 effect's logical connector operation. For Google Sheets writes, prefer a
-stable-key upsert to a blind append. This makes a retry after a crash safe.
+stable-key upsert to a blind append. A sequential retry can find a previously
+written row, but read-then-write is not atomic and requires a single writer.
+See [connector helpers](connector-helpers.md#googlesheetstable) for signatures,
+row formats and replacement/retry limits.
 Never put a spreadsheet ID, OAuth token, or credentials path in workflow code.
 The spreadsheet ID belongs in a named project connector configuration. The
 OAuth token remains private site state.
@@ -511,10 +569,10 @@ def read_mail() -> str:
 Keep the account, Gmail search query, and OAuth token outside workflow source.
 The account and query are project configuration. The token is private site
 state.
-`GmailMailbox.fetch_one_unread()` returns one canonical `gmail_id`, the RFC
-`message_id`, Gmail's integer `internal_date_ms`, and the raw sender-supplied
-`date` header. Use `internal_date_ms` for Gmail inbox ordering; do not treat
-the `date` header as trusted arrival time.
+See [connector helpers](connector-helpers.md) for method signatures, Gmail
+message fields, Calendar event shapes, Telegram announcements and replay limits.
+In particular, Gmail's `mark_processed` removes `UNREAD`, so it marks mail as
+read. It does not add a processed label.
 Google connectors need the optional extra, `zippergen[google]`, in the
 environment that runs `zg`; `zg provider check` reports it as *google support
 installed*. `zg provider authorize CONNECTION` then authorizes the Google
@@ -593,6 +651,36 @@ else:
 
 Keep guards free of external effects. The `else` of a `while` represents the
 exit protocol, not an error handler.
+
+### Values after a loop
+
+Availability checking treats a `while` body as possibly running zero times.
+A value assigned only inside the body is therefore not available after the
+loop. Initialize it before the loop through an owned input or action, or use
+`Var(..., default=...)` when a fixed initial value makes sense:
+
+```python
+from zippergen import Lifeline, Var, pure, workflow
+
+Worker = Lifeline("Worker")
+handled = Var("handled", int, default=0)
+
+@pure
+def increment(value: int) -> int:
+    return value + 1
+
+@workflow
+def count_to(limit: int @ Worker) -> int:
+    while (handled < limit) @ Worker:
+        Worker: handled = increment(handled)
+    return handled @ Worker
+```
+
+Here `limit=0` returns `0`. `Var("handled", int)` alone declares a variable
+but does not initialize it. Defaults are initially available at every
+participant, so use an owned input or action for data that should initially
+belong to only one participant. A resumed role restores its saved values,
+rather than resetting them to these defaults.
 
 For Causal Past Logic guards, prefer structural field terms such as
 `At[Sensor].version == Here.version`; these receive a durable identity

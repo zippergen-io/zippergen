@@ -26,6 +26,7 @@ from zippergen.llm_policy import (
     LLMTransientError,
 )
 from zippergen.syntax import Json, validate_zvalue
+from zippergen.model_servers import LOCAL_BASE_URL
 
 __all__ = [
     "ManagedBackend",
@@ -986,7 +987,7 @@ def backend_from_spec(
             connection,
             "base_url",
             "OLLAMA_BASE_URL",
-            "http://127.0.0.1:11434/v1",
+            LOCAL_BASE_URL,
         )
         api_key = _connection_environment(
             connection, "api_key", "OLLAMA_API_KEY", "ollama"

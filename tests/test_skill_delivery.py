@@ -1,6 +1,7 @@
 """The coding-agent skill must reach an installed user, not only a checkout."""
 
 import subprocess
+import re
 import sys
 import shlex
 import tomllib
@@ -61,7 +62,9 @@ def test_loading_returns_the_body_and_its_references():
 
     assert isinstance(skill, Skill)
     assert "# ZipperGen Workflows" in skill.body
-    assert [name for name, _text in skill.references] == ["dsl-and-cli"]
+    assert [name for name, _text in skill.references] == [
+        "connector-helpers", "dsl-and-cli", "recovery-testing",
+    ]
 
 
 def test_rendering_can_omit_the_references():
@@ -69,6 +72,37 @@ def test_rendering_can_omit_the_references():
 
     assert "# Reference: dsl-and-cli" in skill.render()
     assert "# Reference:" not in skill.render(include_references=False)
+
+
+def test_the_documented_recovery_recipe_runs(tmp_path):
+    """Execute the exact copyable recipe, so its APIs cannot silently drift."""
+
+    document = (skill_directory() / "references" / "recovery-testing.md").read_text()
+    blocks = re.findall(r"```python\n(.*?)\n```", document, re.DOTALL)
+    assert len(blocks) == 2
+    for name, code in zip(("recovery_workflow.py", "test_recovery.py"), blocks):
+        (tmp_path / name).write_text(code + "\n")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "test_recovery.py"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_documented_loop_handles_zero_iterations(tmp_path):
+    from zippergen.availability import require_workflow_availability
+    from zippergen.workflow_io import load_workflow_spec
+
+    document = (skill_directory() / "references" / "dsl-and-cli.md").read_text()
+    section = document.split("### Values after a loop\n", 1)[1]
+    code = re.search(r"```python\n(.*?)\n```", section, re.DOTALL)
+    assert code is not None
+    path = tmp_path / "loop.py"
+    path.write_text(code.group(1) + "\n")
+    wf, _module = load_workflow_spec(str(path) + ":count_to")
+    require_workflow_availability(wf)
+    assert wf(limit=0) == 0
+    assert wf(limit=2) == 2
 
 
 def test_a_missing_skill_says_the_install_is_incomplete():

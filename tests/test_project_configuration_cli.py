@@ -37,6 +37,9 @@ def project(tmp_path, monkeypatch):
         workspace.save_provider_connection(name, values)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
     monkeypatch.chdir(root)
+    monkeypatch.setattr(
+        "zippergen.model_servers.discover_models", lambda *_args, **_kwargs: (),
+    )
     return root, workspace
 
 
@@ -104,6 +107,7 @@ def test_model_configuration_is_fully_guided_in_a_terminal(
             "openai-main",
             "gpt-4o-mini",
             "writer",
+            "",  # Leave assignment to the separate command below.
             "Writer",
             "writer",
         ]
@@ -123,6 +127,135 @@ def test_model_configuration_is_fully_guided_in_a_terminal(
     )["lifelines"] == {"Writer": "writer"}
     output = capsys.readouterr().out
     assert "Available model assignment targets" in output
+
+
+def test_guided_local_setup_discovers_then_assigns(project, monkeypatch, capsys):
+    _root, workspace = project
+    seen = []
+
+    def discover(url):
+        seen.append(url)
+        assert "writer" not in workspace.model_configurations()
+        return ("qwen3:32b",)
+
+    monkeypatch.setattr("zippergen.model_servers.discover_models", discover)
+    prompts = _run_guided(
+        monkeypatch, ["model", "configure"],
+        ["local-main", "", "writer", "Writer"],
+    )
+    assert seen == ["http://127.0.0.1:11434/v1"]
+    assert "qwen3:32b" in prompts[1]
+    assert workspace.model_configurations()["writer"]["model"] == "qwen3:32b"
+    assert workspace.model_assignment_profile(workspace.resolve_workflow())["lifelines"] == {"Writer": "writer"}
+    assert "no model call" in capsys.readouterr().out
+
+
+def test_local_setup_retries_after_tunnel_starts(project, monkeypatch):
+    from zippergen.model_servers import ModelDiscoveryError
+
+    _root, workspace = project
+    calls = []
+
+    def discover(url):
+        calls.append(url)
+        if len(calls) == 1:
+            # The user can correct the URL in another terminal before retrying.
+            workspace.save_provider_connection("local-main", {"kind": "local", "base_url": "http://localhost:1234/v1"})
+            raise ModelDiscoveryError("Connection refused. Start your SSH tunnel.")
+        return ("qwen3:32b",)
+
+    monkeypatch.setattr("zippergen.model_servers.discover_models", discover)
+    _run_guided(monkeypatch, ["model", "configure"], ["local-main", "retry", "", "writer", "Writer"])
+    assert calls == ["http://127.0.0.1:11434/v1", "http://localhost:1234/v1"]
+
+
+def test_discovery_failure_can_be_saved_manually_or_cancelled(project, monkeypatch):
+    from zippergen.model_servers import ModelDiscoveryError
+
+    root, workspace = project
+    before = (root / "zippergen.toml").read_bytes()
+
+    def fail(_url):
+        raise ModelDiscoveryError("Server unavailable")
+
+    monkeypatch.setattr("zippergen.model_servers.discover_models", fail)
+    with pytest.raises(SystemExit, match="Nothing was saved"):
+        _run_guided(monkeypatch, ["model", "configure"], ["local-main", "cancel"])
+    assert (root / "zippergen.toml").read_bytes() == before
+    _run_guided(monkeypatch, ["model", "configure"], ["local-main", "manual", "custom/model", "writer", ""])
+    assert workspace.model_configurations()["writer"]["model"] == "custom/model"
+    assert workspace.model_assignment_profile(workspace.resolve_workflow())["lifelines"] == {}
+
+
+def test_model_list_is_a_suggestion_and_update_keeps_routes_and_settings(project, monkeypatch):
+    _root, workspace = project
+    main(["model", "configure", "writer", "local-main", "old-model", "--max-tokens", "2048"])
+    main(["model", "assign", "Writer", "writer"])
+    before = workspace.model_assignment_profile(workspace.resolve_workflow())
+    monkeypatch.setattr("zippergen.model_servers.discover_models", lambda _url: ("listed-model",))
+    prompts = _run_guided(monkeypatch, ["model", "configure", "writer"], ["", "unlisted-model"])
+    assert len(prompts) == 2  # An existing assignment needs no extra question.
+    assert workspace.model_assignment_profile(workspace.resolve_workflow()) == before
+    saved = workspace.model_configurations()["writer"]
+    assert saved["model"] == "unlisted-model"
+    assert saved["max_tokens"] == "2048"
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_explicit_local_configuration_stays_offline_and_does_not_assign(project, monkeypatch, terminal):
+    _root, workspace = project
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: terminal)
+    monkeypatch.setattr("builtins.input", lambda _prompt: pytest.fail("unexpected prompt"))
+    monkeypatch.setattr("zippergen.model_servers.discover_models", lambda _url: pytest.fail("unexpected network access"))
+    assert main(["model", "configure", "writer", "local-main", "qwen3:32b"]) == 0
+    assert workspace.model_assignment_profile(workspace.resolve_workflow())["lifelines"] == {}
+
+
+def test_local_provider_check_lists_models_without_generation(project, monkeypatch):
+    main(["model", "configure", "writer", "local-main", "qwen3:32b"])
+    main(["model", "assign", "Writer", "writer"])
+    monkeypatch.setattr("zippergen.configuration_checks._live_model_check", lambda *_a, **_k: pytest.fail("unexpected generation"))
+    monkeypatch.setattr("zippergen.configuration_checks._append_live_connector_checks", lambda *_a, **_k: pytest.fail("unexpected connector check"))
+    seen = []
+
+    def discover(url):
+        seen.append(url)
+        return ("qwen3:32b",)
+
+    monkeypatch.setattr("zippergen.model_servers.discover_models", discover)
+    assert main(["provider", "check", "local-main", "--strict"]) == 0
+    assert seen == ["http://127.0.0.1:11434/v1"]
+
+
+def test_unreachable_local_provider_fails_strict_check(project, monkeypatch):
+    from zippergen.model_servers import ModelDiscoveryError
+
+    def fail(_url):
+        raise ModelDiscoveryError("Connection refused")
+
+    monkeypatch.setattr("zippergen.model_servers.discover_models", fail)
+    assert main(["provider", "check", "local-main", "--strict"]) == 1
+
+
+def test_live_model_failure_identifies_the_endpoint_and_tunnel(project, monkeypatch):
+    from urllib.error import URLError
+    from zippergen.project_configuration import configuration_report
+    from zippergen.llm_policy import LLMTransientError
+
+    _root, workspace = project
+    main(["model", "configure", "writer", "local-main", "qwen3:32b"])
+    workspace.save_provider_connection("local-main", {"kind": "local", "base_url": "http://127.0.0.1:1234/v1"})
+
+    def fail(spec, *_args, **_kwargs):
+        if spec != "mock":
+            raise LLMTransientError("Could not reach API") from URLError(ConnectionRefusedError(61, "refused"))
+
+    monkeypatch.setattr("zippergen.configuration_checks._live_model_check", fail)
+    report = configuration_report(workspace, live=True, model_names=("writer",))
+    check = next(item for item in report["checks"] if item["name"].startswith("live model local@"))
+    assert check["status"] == "fail"
+    assert "http://127.0.0.1:1234/v1" in check["detail"]
+    assert "SSH tunnel here" in check["detail"]
 
 
 @pytest.mark.parametrize(
@@ -200,7 +333,7 @@ def _run_guided(monkeypatch, command, answers):
             ["model", "configure"],
             "Provider connection",
             "Model configuration name",
-            ["openai-main", "gpt-4o-mini", REJECTED_NAME, "writer"],
+            ["openai-main", "gpt-4o-mini", REJECTED_NAME, "writer", ""],
             "model_configurations",
             "writer",
         ),
@@ -265,6 +398,7 @@ def test_a_guided_prompt_asks_again_after_a_rejected_answer(
             "local-qwen3:14b",     # a colon is not allowed in a name
             "mock",                # reserved by ZipperGen
             "local-qwen3",
+            "",
         ]
     )
     monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
@@ -283,7 +417,7 @@ def test_a_guided_prompt_asks_again_after_a_rejected_answer(
 
 def test_guided_scripted_model_asks_for_a_response_file(project, monkeypatch):
     _root, workspace = project
-    answers = iter(["scripted-main", "answers.json", "responses"])
+    answers = iter(["scripted-main", "answers.json", "responses", ""])
     monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 

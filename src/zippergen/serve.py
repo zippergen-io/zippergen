@@ -1862,6 +1862,7 @@ def _guided_required_value(
     default: str | None = None,
     check: Callable[[str], str | None] | None = None,
     enforce_choices: bool = True,
+    choices_label: str | None = None,
 ) -> str:
     """Return a required CLI value, prompting only in a human terminal.
 
@@ -1893,7 +1894,7 @@ def _guided_required_value(
             f"{label} is required. Pass it explicitly with: {command}"
         )
     if choices:
-        print(f"Available {label.casefold()}s: {', '.join(choices)}")
+        print(f"Available {choices_label or label.casefold() + 's'}: {', '.join(choices)}")
         # One candidate is its own suggestion. It is offered, not taken: the
         # value still only applies if the person presses Enter on it.
         if default is None and len(choices) == 1:
@@ -1996,6 +1997,82 @@ def _provider_set_credential_command(workspace, connection: object) -> int:
     return 0
 
 
+def _guided_local_models(workspace, connection: str) -> tuple[str, ...]:
+    from zippergen.model_servers import (
+        LOCAL_BASE_URL,
+        ModelDiscoveryError,
+        discover_models,
+        display_server_url,
+    )
+
+    while True:
+        profile = workspace.provider_connections()[connection]
+        base_url = profile.get("base_url") or LOCAL_BASE_URL
+        print(f"Model server: {display_server_url(base_url)}")
+        print("Checking available models (no model call)...", flush=True)
+        try:
+            models = discover_models(base_url)
+        except ModelDiscoveryError as exc:
+            print(str(exc))
+            print(f"To change the address: zg provider configure {connection} local")
+            print("Retry after starting the server or tunnel, or enter a model manually.")
+            choice = _guided_required_value(
+                None,
+                label="Next step",
+                command="zg model configure NAME CONNECTION MODEL",
+                choices=("retry", "manual", "cancel"),
+                default="cancel",
+            )
+            if choice == "retry":
+                continue
+            if choice == "cancel":
+                raise SystemExit("Cancelled. Nothing was saved.")
+            return ()
+        if not models:
+            print("The server returned no models. You can enter a model name manually.")
+        else:
+            print("The model list is available. Generation is checked by 'zg model check'.")
+        return models
+
+
+def _guided_model_participant(workspace, project: str | None, name: str) -> str | None:
+    """Offer an assignment without silently replacing an existing route."""
+
+    targets = tuple(
+        target for target in _project_choices("model-targets", project)
+        if target != "default" and "." not in target
+    )
+    if not targets:
+        return None
+    profile = workspace.model_assignment_profile(workspace.resolve_workflow())
+    assigned = [
+        str(target)
+        for group in ("lifelines", "actions")
+        for target, configuration in (profile.get(group) or {}).items()
+        if configuration == name
+    ]
+    if profile.get("default") == name:
+        assigned.append("default")
+    if assigned:
+        print(f"Keeping existing assignments to {name}: {', '.join(assigned)}")
+        return None
+    print("Participants: " + ", ".join(targets))
+    current = profile.get("lifelines") or {}
+    for target in targets:
+        if target in current:
+            print(f"  {target} currently uses {current[target]}")
+    while True:
+        try:
+            target = input("Assign to participant (Enter to skip): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise SystemExit("Cancelled. Nothing was saved.") from None
+        if not target:
+            return None
+        if target in targets:
+            return target
+        print(f"Unknown participant {target!r}. Available: {', '.join(targets)}")
+
+
 def _model_command(args) -> int:
     from zippergen.project_configuration import (
         assign_model,
@@ -2011,6 +2088,9 @@ def _model_command(args) -> int:
     action = getattr(args, "model_action", None)
     try:
         if action == "configure":
+            guided = sys.stdin.isatty() and not all(
+                (args.name, args.connection, args.model)
+            )
             connections = _required_provider_connections(
                 "provider-connections-model",
                 args.project,
@@ -2030,11 +2110,17 @@ def _model_command(args) -> int:
                 choices=connections,
                 default=str(existing.get("connection") or "") or None,
             )
+            models = ()
+            if guided and workspace.provider_connections()[connection]["kind"] == "local":
+                models = _guided_local_models(workspace, connection)
             model = _guided_required_value(
                 args.model,
                 label="Model name or path",
                 command="zg model configure NAME CONNECTION MODEL",
                 default=str(existing.get("model") or "") or None,
+                choices=models,
+                enforce_choices=False,
+                choices_label="models",
             )
             check = _name_check("model configuration", {"mock"})
             name = _guided_required_value(
@@ -2059,6 +2145,10 @@ def _model_command(args) -> int:
             timeout = args.timeout
             if timeout is None and existing.get("timeout") is not None:
                 timeout = float(str(existing["timeout"]))
+            participant = (
+                _guided_model_participant(workspace, args.project, name)
+                if guided else None
+            )
             value = configure_model(
                 workspace,
                 name,
@@ -2073,6 +2163,11 @@ def _model_command(args) -> int:
                 f"Saved model configuration {name}: "
                 f"{value['connection']} / {value['model']}"
             )
+            if participant:
+                assign_model(workspace, participant, name)
+                print(f"Assigned {participant} to model configuration {name}.")
+            if guided:
+                print(f"Check generation with: zg model check {name}")
             return 0
         if action in {"assign", "unassign"}:
             target = _guided_required_value(

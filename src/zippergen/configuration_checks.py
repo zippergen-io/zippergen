@@ -30,6 +30,37 @@ from zippergen.assistant_backends import ASSISTANT_BACKENDS
 Check = dict[str, object]
 
 
+def _live_model_failure_detail(
+    spec: str, environment: Mapping[str, str], exc: Exception,
+) -> str:
+    """Attach the actual local destination to a failed generation check."""
+
+    from zippergen.model_servers import (
+        LOCAL_BASE_URL,
+        display_server_url,
+        is_connection_failure,
+        server_connection_help,
+    )
+    from zippergen.provider_connections import provider_environment_name
+
+    detail = f"{type(exc).__name__}: {exc}"
+    try:
+        kind, connection, _model = split_model_spec(spec)
+    except ValueError:
+        return detail
+    if kind != "local":
+        return detail
+    variable = (
+        provider_environment_name(connection, "base_url")
+        if connection else "OLLAMA_BASE_URL"
+    )
+    base_url = environment.get(variable, os.environ.get(variable, LOCAL_BASE_URL))
+    detail = f"Server: {display_server_url(base_url)}. {detail}"
+    if is_connection_failure(exc):
+        detail += " " + server_connection_help(base_url)
+    return detail
+
+
 def _check(
     status: str,
     name: str,
@@ -369,11 +400,30 @@ def _site_checks(
             kind = str(profile.get("kind") or "")
             field = provider_credential_field(kind)
             if field is None:
+                detail = "no credential required"
+                status = "ok"
+                if kind == "local":
+                    from zippergen.model_servers import (
+                        LOCAL_BASE_URL,
+                        ModelDiscoveryError,
+                        discover_models,
+                        display_server_url,
+                    )
+
+                    base_url = profile.get("base_url") or LOCAL_BASE_URL
+                    detail = f"server {display_server_url(base_url)}, no credential required"
+                    if live and connection in provider_names:
+                        try:
+                            models = discover_models(base_url)
+                            detail += f", model list available ({len(models)} models)"
+                        except ModelDiscoveryError as exc:
+                            status = "fail"
+                            detail += f". {exc}"
                 checks.append(
                     _check(
-                        "ok",
+                        status,
                         f"provider connection {connection}",
-                        "no credential required",
+                        detail,
                         scopes=connection_scopes,
                     )
                 )
@@ -515,7 +565,12 @@ def _site_checks(
                     )
                 )
 
-        if live:
+        # A provider check tests access to providers, not workflow generation
+        # or unrelated connectors. Model checks still exercise generation.
+        provider_only = bool(provider_names) and not (
+            model_names or assistant_names or connector_names
+        )
+        if live and not provider_only:
             # Check every distinct way a model will be invoked, not every
             # distinct spec. One spec can be two invocations.
             for spec, chosen in _model_invocations(
@@ -533,7 +588,7 @@ def _site_checks(
                         _check(
                             "fail",
                             f"live model {spec}",
-                            f"{type(exc).__name__}: {exc}",
+                            _live_model_failure_detail(spec, environment, exc),
                             scopes=("model",),
                         )
                     )

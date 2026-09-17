@@ -105,10 +105,26 @@ zg model assign Extractor extractor
 ```
 
 The base URL is site configuration, so `zippergen.toml` records only that the
-connection is local; each machine points it at its own server. Any
-OpenAI-compatible server works. Add `--idle-timeout SECONDS` to
-`zg model configure` to unload the model between calls; it is valid only for a
-local connection.
+connection is local; each machine points it at its own compatible server.
+For Ollama, add `--idle-timeout SECONDS` to `zg model configure` to unload the
+model between calls. That operation uses Ollama's native API, so do not enable
+it for other OpenAI-compatible servers.
+
+Reuse an existing model server when the user has one. Establish its working
+base URL and model name before proposing downloads, another server, or a custom
+Ollama Modelfile. Ask about an existing SSH tunnel when relevant. `localhost`
+means the computer running ZipperGen, not the remote GPU server. Label each
+setup command with the machine and directory where it belongs. Do not assume a
+file generated in the project also exists on the server.
+
+For human setup, `zg model configure` checks a local server's model list before
+asking for a model name and offers participant assignment. Discovery sends no
+generation request. Fully specified configuration commands remain offline.
+Use `zg model check NAME` to test generation after the connection works. A green
+check does not establish sufficient context length or application correctness.
+Configure extra context only when the workload needs it and the server's
+existing settings are insufficient. Read **Local model setup** in the CLI
+reference for the server and tunnel handoff.
 
 `--temperature` is a portable model-configuration default. An explicit
 `@llm(temperature=...)` wins for that action. Use 0 for lower-variance
@@ -243,6 +259,8 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
    For a durable claim/finalize sequence, test a fresh-process resume after
    claiming and test each effect again after it has already succeeded. Neither
    path may depend on process-local memory or select a different item.
+   Use [the recovery test recipe](references/recovery-testing.md) for a runnable
+   subprocess example with fake services and both approval outcomes.
    Treat paths, file layouts, sample contents, and commands in the request as
    executable acceptance criteria. Test the exact examples before reporting
    success. Do not silently add a directory level, require metadata the sample
@@ -258,6 +276,9 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
    search query, and OAuth credential in the connector configuration. Declare
    connector access explicitly. Use `read-only` whenever the workflow does not
    modify the external service.
+   Read [connector helpers](references/connector-helpers.md) before using Gmail,
+   Google Sheets, Google Calendar or Telegram effects. It lists return shapes
+   and limitations.
 7. Run the validation and inspection gate below.
 
 Workflow inputs are protocol data with an initial owner. Do not turn an
@@ -325,6 +346,9 @@ zg show --agent AgentName
 
 Use `--format json` when programmatic checking helps. Run focused tests first,
 then the repository's broader suite and static checks in proportion to risk.
+Do not repeat a successful check unless a subsequent change or new evidence
+could invalidate its result. This does not replace required branch or recovery
+tests.
 When a specification names logical connectors, confirm every exact name in the
 full view or semantic JSON before reporting success.
 
