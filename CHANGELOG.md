@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.0a5 - 2026-09-18
+
+This alpha makes local model setup easier and gives coding agents more precise
+workflow and connector instructions.
 
 - Guided local model setup shows the server URL, offers available models and
   participant assignment, and explains connection failures and SSH tunnels.
@@ -10,6 +13,22 @@
   connector signatures and return shapes, loop initialization guidance, and a
   runnable crash-recovery test using fake services. Clarified when successful
   checks need to be repeated.
+- Updated the development and deployment guide for the guided model setup and
+  remote model connections. The first tutorial prompt now stays on one page
+  and can be copied without a shell prompt marker.
+
+Upgrade notes:
+
+- Workflow syntax, the durable-store schema and deployment command meanings
+  are unchanged from 0.1.0a4. No state reset is needed for this package update.
+- In an existing coding-agent conversation, run `zg skill` again after
+  upgrading so the agent receives the updated instructions.
+- Existing deployments keep their managed runtime until redeployed. Stop the
+  deployment and run `zg deploy` to apply the updated runtime while preserving
+  compatible saved state.
+- The [security limits](docs/security.md) are unchanged. Workflows are trusted
+  Python code, assistant access needs suitable operating-system isolation, and
+  external effects may repeat after a crash.
 
 ## 0.1.0a4 - 2026-09-16
 

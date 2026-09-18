@@ -117,7 +117,7 @@
 \title{\color{ZipperInk}\Huge\textbf{Your First ZipperGen Workflow}\\[5pt]
 \Large Draft a reply, ask a person, then send}
 \author{The ZipperGen Authors}
-\date{Tutorial edition: 12 September 2026}
+\date{Tutorial edition: 18 September 2026}
 
 \begin{document}
 
@@ -238,18 +238,20 @@ directory:
 claude  # or: codex
 \end{lstlisting}
 
+\begin{minipage}{\linewidth}
 Then ask:
 
 \begin{lstlisting}[style=agent]
-> Build a ZipperGen workflow that watches a mailbox directory, asks an LLM
-  to draft a short reply to each new message, and asks me to approve it
-  before it is sent. It should keep running and wait for the next message.
+Build a ZipperGen workflow that watches a mailbox directory, asks an LLM
+to draft a short reply to each new message, and asks me to approve it
+before it is sent. It should keep running and wait for the next message.
 
-  Use plain .txt files directly inside mailbox/, with the entire file as the
-  message body. A file containing only "Can we meet on Thursday" is a complete
-  message. Use mailbox/ as the local default. Verify that "zg run --llm mock"
-  reaches approval directly with this exact layout.
+Use plain .txt files directly inside mailbox/, with the entire file as the
+message body. A file containing only "Can we meet on Thursday" is a complete
+message. Use mailbox/ as the local default. Verify that "zg run --llm mock"
+reaches approval directly with this exact layout.
 \end{lstlisting}
+\end{minipage}
 
 The agent reads \texttt{AGENTS.md}, which directs it to run \texttt{zg skill}.
 The skill explains how to write and check a workflow and which boundaries to

@@ -138,7 +138,7 @@
 \title{\color{ZipperInk}\Huge\textbf{ZipperGen Workflow Development and Deployment Manual}\\[5pt]
 \Large Concepts, commands, configuration, runtime, and operations}
 \author{The ZipperGen Authors}
-\date{Manual edition: 12 September 2026}
+\date{Manual edition: 18 September 2026}
 
 
 \begin{document}
@@ -776,9 +776,8 @@ zg run --llm openai:gpt-4o-mini
 \end{tabularx}
 \end{center}
 
-To fix the choice in the project rather than the command line, put it in
-\path{zippergen.toml} under \texttt{models}. The guided command does this and
-can also collect the key privately:
+To save the model choice in \path{zippergen.toml}, use guided configuration.
+The credential command saves the key privately on this computer:
 
 \begin{lstlisting}[style=shell]
 zg provider configure
@@ -790,11 +789,15 @@ zg provider set-credential openai-main
 OpenAI API key (input hidden):
 
 zg model configure
-Model configuration name: writer
 Available provider connections: openai-main
-Provider connection: openai-main
+Provider connection [openai-main]: openai-main
 Model name or path: gpt-4o-mini
+Model configuration name [gpt-4o-mini]: writer
 \end{lstlisting}
+
+ZipperGen then offers to assign the configuration to a participant that uses a
+model. Press Enter to skip assignment, or use \texttt{zg model assign} later.
+Updating a configuration keeps its existing assignments.
 
 The connection name and the model are project configuration. The key is a site
 credential. They are deliberately stored in different places, which is also why
@@ -812,7 +815,9 @@ zg model configure extractor my-ollama qwen2.5:7b
 zg model assign Extractor extractor
 \end{lstlisting}
 
-Guided, it fills the usual endpoint in for you:
+If you already have a working model server, use its URL and an installed model.
+You do not need a custom Ollama Modelfile. Guided provider setup offers the
+usual endpoint:
 
 \begin{lstlisting}[style=shell]
 zg provider configure
@@ -827,10 +832,38 @@ connection. Each machine points it at its own server, and a colleague who
 clones the repository supplies their own. Any OpenAI-compatible server works;
 Ollama is simply the common one.
 
+Run \texttt{zg model configure} with no arguments to choose a model
+interactively. For a local connection, it shows the server URL and asks the
+server for its model list, then offers participant assignment. Discovery does
+not generate text. If the server cannot be reached, you can retry after starting
+it or enter a model name manually. Fully specified configuration commands remain
+offline.
+
+Use \texttt{zg model check NAME} to check generation after the connection works.
+This does not establish that the model has enough context for your application.
+
+\paragraph{A model on another computer.}
+The address \texttt{127.0.0.1} refers to the computer running ZipperGen. If your
+model runs on a GPU server, use its reachable API address or an SSH tunnel.
+For an Ollama server listening on port 11434, run this on the computer running
+ZipperGen, from any directory. Replace \texttt{YOUR\_GPU\_HOST} with your SSH
+host or alias:
+
+\begin{lstlisting}[style=shell]
+ssh -fN -o ExitOnForwardFailure=yes -L 11434:127.0.0.1:11434 YOUR_GPU_HOST
+\end{lstlisting}
+
+The tunnel runs in the background and makes the remote server available at
+\path{http://127.0.0.1:11434/v1} on this computer. Reuse an existing tunnel
+when one is already running. If you later deploy ZipperGen on another machine,
+that machine needs its own working connection to the model server.
+This command does not restore the tunnel after a restart. An unattended
+deployment needs a connection that will be available when its service starts.
+
 A model configuration that names a local connection also accepts
 \texttt{zg model configure ... -{}-idle-timeout SECONDS}, which unloads the
-model after that long without a call. It is rejected for any other kind of
-connection, because only a local server has memory of yours to release.
+model after that long without a call. This uses Ollama's native API, so leave
+it unset for other OpenAI-compatible servers.
 
 Any model configuration accepts the settings that describe how the model is
 invoked, stored beside it in \path{zippergen.toml}:
