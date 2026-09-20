@@ -18,7 +18,7 @@ from zippergen.syntax import (
     ZTypeAtLifeline,
     Expr, VarExpr, LitExpr,
     Stmt, AnyStmt, EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
-    ParallelStmt,
+    ParallelStmt, SpawnStmt, Field,
     LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Workflow,
     seq, is_json_value, is_ztype,
@@ -30,7 +30,7 @@ __all__ = [
     # Fragment decorator
     "fragment",
     # Statement builders
-    "msg", "act", "skip", "parallel", "branch",
+    "msg", "act", "skip", "parallel", "branch", "spawn",
     "if_", "while_",
 ]
 
@@ -72,9 +72,11 @@ def _collect(fn: Callable) -> AnyStmt:
     collected statements folded into a single Stmt via seq().
     """
     _stack.append([])
-    fn()
-    stmts = _stack.pop()
-    return seq(*stmts)
+    try:
+        fn()
+        return seq(*_stack[-1])
+    finally:
+        _stack.pop()
 
 
 def _flatten_seq(stmt: AnyStmt) -> list[AnyStmt]:
@@ -194,6 +196,19 @@ def parallel_(*branches: Callable) -> None:
     if not branches:
         raise ValueError("parallel requires at least one branch")
     _record(ParallelStmt(tuple(_collect(branch) for branch in branches)))
+
+
+def spawn(body: Callable | None = None, *, fresh: tuple[Field, ...] = ()):
+    """Experimental detached session. Use ``with spawn(fresh=(A.x,))``.
+
+    A zero-argument fragment may also be passed as ``spawn(fragment, fresh=...)``.
+    Fields copy their current local values at each endpoint's fork. No join.
+    """
+    if body is None:
+        raise TypeError("spawn must be used inside a @workflow with block or given a fragment")
+    if not callable(body) or isinstance(body, Workflow):
+        raise TypeError("spawn body must be a zero-argument fragment, or use a with block")
+    _record(SpawnStmt(_collect(body), tuple(fresh)))
 
 
 def if_(
@@ -468,6 +483,19 @@ class _ProcTransformer(ast.NodeTransformer):
         self._remember_action_outputs(action_call.func, outputs)
         return self._make_act_call(lifeline_ast, action_call.func, action_call.args, outputs)
 
+    def visit_Call(self, node: ast.Call) -> ast.Call:
+        if isinstance(node.func, ast.Name) and node.func.id == "spawn":
+            for keyword in node.keywords:
+                if keyword.arg == "fresh" and isinstance(keyword.value, (ast.Tuple, ast.List)):
+                    keyword.value.elts = [
+                        ast.Call(ast.Name("__zg_field__", ast.Load()),
+                                 [field.value, ast.Constant(field.attr)], [])
+                        if isinstance(field, ast.Attribute) else field
+                        for field in keyword.value.elts
+                    ]
+        self.generic_visit(node)
+        return node
+
     def visit_With(self, node: ast.With) -> ast.stmt | list[ast.stmt]:
         """
         Rewrite a ``with Lifeline:`` block into one ``act(...)`` call per line.
@@ -482,6 +510,23 @@ class _ProcTransformer(ast.NodeTransformer):
             return node
 
         lifeline_ast = node.items[0].context_expr
+        if (isinstance(lifeline_ast, ast.Call)
+                and isinstance(lifeline_ast.func, ast.Name)
+                and lifeline_ast.func.id == "spawn"):
+            if lifeline_ast.args or any(k.arg != "fresh" for k in lifeline_ast.keywords):
+                raise SyntaxError("with spawn accepts only fresh=(Participant.field, ...)")
+            if any(isinstance(n, ast.Return) for statement in node.body for n in ast.walk(statement)):
+                raise SyntaxError("spawn has no return or join. Return belongs to the parent workflow")
+            name = _fresh("spawn")
+            self.visit_Call(lifeline_ast)
+            body_fn = _make_fn(name, node.body)
+            self.generic_visit(body_fn)
+            return [body_fn, ast.Expr(ast.Call(
+                func=ast.Name(id="spawn", ctx=ast.Load()),
+                args=[ast.Name(id=name, ctx=ast.Load())],
+                keywords=lifeline_ast.keywords,
+            ))]
+
         if isinstance(lifeline_ast, ast.Name) and lifeline_ast.id == "parallel":
             branch_fns: list[ast.FunctionDef] = []
             branch_names: list[str] = []
@@ -733,6 +778,8 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, list[tuple[str, str]
         "if_":       if_,
         "while_":    while_,
         "parallel_": parallel_,
+        "spawn": spawn,
+        "__zg_field__": Field,
         "_tag_cond": _tag_cond,
     })
     inferred_vars = _infer_output_vars(fn.__name__, transformer.action_outputs, exec_globals)

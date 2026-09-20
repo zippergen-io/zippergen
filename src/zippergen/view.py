@@ -37,7 +37,7 @@ from zippergen.syntax import (
     LitExpr,
     MsgStmt,
     ParallelLocalStmt,
-    ParallelStmt,
+    ParallelStmt, SpawnStmt, ForkStmt,
     PlannerAction,
     PureAction,
     RecvStmt,
@@ -145,6 +145,8 @@ def _actions(stmt: AnyStmt) -> list[object]:
         elif isinstance(node, WhileRecvStmt):
             visit(node.body)
             visit(node.exit_body)
+        elif isinstance(node, (SpawnStmt, ForkStmt)):
+            visit(node.body)
         elif isinstance(node, (ParallelStmt, ParallelLocalStmt)):
             for branch in node.branches:
                 visit(branch)
@@ -168,6 +170,8 @@ def _action_owners(stmt: AnyStmt) -> dict[int, set[str]]:
         elif isinstance(node, (WhileStmt, WhileRecvStmt)):
             visit(node.body)
             visit(node.exit_body)
+        elif isinstance(node, (SpawnStmt, ForkStmt)):
+            visit(node.body)
         elif isinstance(node, (ParallelStmt, ParallelLocalStmt)):
             for branch_stmt in node.branches:
                 visit(branch_stmt)
@@ -374,6 +378,8 @@ class _GlobalRenderer:
             return self._relevant(stmt.branch_true) or self._relevant(stmt.branch_false)
         if isinstance(stmt, WhileStmt):
             return self._relevant(stmt.body) or self._relevant(stmt.exit_body)
+        if isinstance(stmt, SpawnStmt):
+            return self._relevant(stmt.body)
         if isinstance(stmt, ParallelStmt):
             return any(self._relevant(branch) for branch in stmt.branches)
         return False
@@ -419,6 +425,11 @@ class _GlobalRenderer:
             if exit_lines:
                 lines.extend([f"{pad}else:", *exit_lines])
             return lines
+        if isinstance(stmt, SpawnStmt):
+            fields = ", ".join(f"{f.lifeline.name}.{f.name}" for f in stmt.fresh)
+            selection = f"fresh=({fields},)" if fields else ""
+            return [f"{pad}with spawn({selection}):",
+                    *(self.render(stmt.body, indent + 1) or [pad + "    pass"])]
         if isinstance(stmt, ParallelStmt):
             branches = [branch for branch in stmt.branches if self._relevant(branch)]
             lines = [f"{pad}with parallel:"]
@@ -449,6 +460,8 @@ class _LocalRenderer:
             return self._relevant(stmt.branch_true) or self._relevant(stmt.branch_false)
         if isinstance(stmt, (WhileStmt, WhileRecvStmt)):
             return self._relevant(stmt.body) or self._relevant(stmt.exit_body)
+        if isinstance(stmt, ForkStmt):
+            return self._relevant(stmt.body)
         if isinstance(stmt, ParallelLocalStmt):
             return any(self._relevant(branch) for branch in stmt.branches)
         return True
@@ -470,6 +483,10 @@ class _LocalRenderer:
         pad = "    " * indent
         if not self._relevant(stmt):
             return []
+        if isinstance(stmt, ForkStmt):
+            body = self.render_annotated(stmt.body, indent + 1, path + (0,))
+            return [(path, f"{pad}with fork_session({stmt.site!r}, fresh={stmt.fresh!r}):"),
+                    *(body or [(None, pad + "    pass")])]
         if isinstance(stmt, SeqStmt):
             return [
                 *self.render_annotated(stmt.first, indent, path + (0,)),
@@ -636,6 +653,8 @@ def describe_local_statement(stmt: object) -> str:
         return f"receive loop decision from {stmt.sender.name}"
     if isinstance(stmt, ParallelLocalStmt):
         return "parallel local branches"
+    if isinstance(stmt, ForkStmt):
+        return "start child session"
     return type(stmt).__name__
 
 

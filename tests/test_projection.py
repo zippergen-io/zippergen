@@ -9,7 +9,7 @@ import pytest
 from zippergen.syntax import (
     occurring_variables,
     EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
-    ParallelStmt,
+    ParallelStmt, SpawnStmt,
     SendStmt, RecvStmt, IfRecvStmt, WhileRecvStmt, ParallelLocalStmt,
     Lifeline, Var, VarExpr, LitExpr,
     Workflow, seq, is_kappa_ctrl,
@@ -603,6 +603,7 @@ def _one_of_each_global_statement():
         IfStmt: IfStmt(lambda _e: True, A, msg, EmptyStmt()),
         WhileStmt: WhileStmt(lambda _e: False, A, msg, EmptyStmt()),
         ParallelStmt: ParallelStmt((msg, EmptyStmt())),
+        SpawnStmt: SpawnStmt(msg),
     }
 
 

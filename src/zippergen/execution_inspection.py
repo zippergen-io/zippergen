@@ -258,6 +258,7 @@ def _trace_row(
 
     timestamp = _trace_time(event.get("recorded_at"))
     event_type = event.get("type", "event")
+    session = f" · session={event['session']}" if event.get("session") is not None else ""
     if event_type == "send":
         source = event.get("from", role)
         target = event.get("to", "?")
@@ -293,7 +294,7 @@ def _trace_row(
             else "failed" if event_type == "act_failed"
             else "done"
         )
-        detail = str(action)
+        detail = str(action) + session
         seq = event.get("seq")
         if seq is not None:
             detail += f" · seq={seq}"
@@ -323,7 +324,7 @@ def _trace_row(
         )
     if event_type == "llm_retry":
         action = event.get("action", "?")
-        detail = str(action)
+        detail = str(action) + session
         if event.get("detail"):
             detail += f" · {event['detail']}"
         return timestamp, f"#{item['rowid']}", role, "LLM retry", detail
@@ -333,7 +334,7 @@ def _trace_row(
         label = (
             "continue" if value else "exit"
         ) if decision_kind == "while" else ("true" if value else "false")
-        detail = f"{decision_kind} → {label}"
+        detail = f"{decision_kind} → {label}" + session
         condition = event.get("formula") or event.get("condition")
         if condition:
             detail += f" · {condition}"
@@ -373,7 +374,7 @@ def _trace_rows(
         if isinstance(attempt_id, str) and attempt_id:
             key = ("attempt", attempt_id)
         elif type(seq) is int:
-            key = ("sequence", role, seq)
+            key = ("sequence", role, event.get("session"), seq)
         else:
             key = None
         if key is None:

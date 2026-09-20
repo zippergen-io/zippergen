@@ -21,6 +21,32 @@ from zippergen.value_codec import encode_value
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "email_approval.py"
 
 
+@pytest.mark.parametrize('kind', ['act_start', 'act', 'act_failed', 'llm_retry', 'decision'])
+def test_history_table_keeps_session_identity(kind):
+    from zippergen.execution_inspection import _trace_rows
+    event = {'type': kind, 'action': 'draft', 'session': '0/1:2'}
+    rows = _trace_rows([{'rowid': 1, 'role': 'Writer', 'event': event}])
+    assert 'session=0/1:2' in rows[0][-1]
+
+
+def test_history_matches_action_completions_within_their_session():
+    from zippergen.execution_inspection import _trace_rows
+    def row(rowid, kind, session, at):
+        return {'rowid': rowid, 'role': 'Writer', 'event': {
+            'type': kind, 'action': 'draft', 'seq': 1,
+            'session': session, 'recorded_at': at,
+        }}
+    rows = _trace_rows([
+        row(1, 'act_start', 'first', 10),
+        row(2, 'act_start', 'second', 11),
+        row(3, 'act', 'first', 12),
+    ])
+    assert rows[0][3] == 'action start'
+    assert rows[1][3] == 'action incomplete'
+    assert 'no completion recorded' in rows[1][-1]
+    assert 'session=first' in rows[2][-1]
+
+
 def _observed_run(tmp_path, monkeypatch):
     root = tmp_path / "project"
     root.mkdir()

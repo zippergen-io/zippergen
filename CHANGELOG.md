@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- Fixed durable parallel execution losing an external action's result when a
+  receive in another branch became enabled during the call. The returned
+  result now commits to the action that requested it, without repeating the
+  call. This also fixes workflows that do not use spawn.
+- Experimental `spawn` starts detached sessions using the same participants.
+  Selected local fields copy at each participant's fork. Sessions have separate
+  controls and message channels and resume from the durable store.
+- Durable spawn runs keep human approvals in the task queue so other sessions
+  can continue. Use `zg run tasks` and `zg run approve --task TASK_ID --yes`
+  or `--no`, or the existing Telegram connector.
+- Deployed workflows using pools now retain the durable human-task backend
+  instead of opening terminal prompts. Plain local runs still prompt inline.
+- Spawn validation warns about writes to inherited fields omitted from `fresh`,
+  including receive targets. Intentional sharing remains allowed.
+- Added a self-contained concurrent approval example and workflow skill
+  guidance. See [experimental spawn](docs/experimental-spawn.md) for its
+  semantics and limits. CPL guards and session admission limits are not yet
+  supported. External actions retain their existing replay behavior.
+
 ## 0.1.0a5 - 2026-09-18
 
 This alpha makes local model setup easier and gives coding agents more precise

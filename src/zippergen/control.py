@@ -10,7 +10,8 @@ three shapes fresh, and each gets one constructor here:
     seq  a b                 run a, then b
     par  [branches] [labels] a local parallel region, one control per branch
 
-That is the whole control language. It is closed under one interpreter step,
+Spawn adds a top-level ``sessions`` registry containing these same residuals,
+the copied cells, fork counters and pending human requests. It is closed under one interpreter step,
 which is exactly why storing the current state is sufficient and why nothing
 has to be replayed. A role resumes by decoding this value against a freshly
 projected program and continuing.
@@ -28,6 +29,7 @@ from dataclasses import dataclass
 from typing import TypeAlias, cast
 
 from zippergen.locator import _children, resolve_path, statement_node_paths
+from zippergen.sessions import SessionState
 from zippergen.syntax import (
     AnyStmt,
     EmptyStmt,
@@ -57,9 +59,11 @@ class ControlError(Exception):
 Residual: TypeAlias = LocalStmt
 
 
-def encode_control(root: LocalStmt, residual: Residual) -> dict:
+def encode_control(root: LocalStmt, residual: Residual | SessionState) -> dict:
     """Represent a residual as plain JSON-safe data."""
 
+    if isinstance(residual, SessionState):
+        return residual.encode(root)
     paths = statement_node_paths(root)
 
     def encode(node: Residual) -> dict:
@@ -88,8 +92,11 @@ def encode_control(root: LocalStmt, residual: Residual) -> dict:
     return encode(residual)
 
 
-def decode_control(root: LocalStmt, data: dict) -> Residual:
+def decode_control(root: LocalStmt, data: dict) -> Residual | SessionState:
     """Rebuild a residual from encoded control state and a projected program."""
+
+    if data.get("k") == "sessions":
+        return SessionState.decode(root, data)
 
     def decode(node: object) -> Residual:
         if not isinstance(node, dict):
@@ -120,12 +127,14 @@ def decode_control(root: LocalStmt, data: dict) -> Residual:
     return decode(data)
 
 
-def frontier_paths(root: LocalStmt, residual: Residual) -> list[list[int]]:
+def frontier_paths(root: LocalStmt, residual: Residual | SessionState) -> list[list[int]]:
     """Paths of the leaves this residual would try to run next.
 
     Diagnostic only. Recovery uses the control state itself.
     """
 
+    if isinstance(residual, SessionState):
+        return residual.frontier(root)
     paths = statement_node_paths(root)
 
     def walk(node: Residual) -> list[list[int]]:
@@ -208,6 +217,8 @@ def _shape(node) -> list:
         "receiver",
         "channel",
         "branch_indices",
+        "site",
+        "fresh",
     ):
         value = getattr(node, name, None)
         if value is not None:

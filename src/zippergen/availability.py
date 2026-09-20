@@ -18,6 +18,7 @@ from zippergen.syntax import (
     LitExpr,
     MsgStmt,
     ParallelStmt,
+    SpawnStmt,
     SeqStmt,
     SkipStmt,
     Var,
@@ -218,6 +219,10 @@ def _check_statement(
             exit_state = state.copy()
             _check_statement(exit_body, exit_state, known_variables)
             state.replace_with(exit_state)
+
+        case SpawnStmt(body=body):
+            # Child writes establish nothing for the continuing parent.
+            _check_statement(body, state.copy(), known_variables)
 
         case ParallelStmt(branches=branches):
             branch_states: list[AvailabilityState] = []

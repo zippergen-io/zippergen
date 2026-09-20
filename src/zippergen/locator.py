@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from zippergen.syntax import (
     SeqStmt, IfStmt, IfRecvStmt, WhileStmt, WhileRecvStmt,
-    ParallelLocalStmt,
+    ParallelLocalStmt, ForkStmt,
 )
 
 
@@ -26,6 +26,8 @@ def _children(node) -> list:
             return [b, x]
         case WhileRecvStmt(body=b, exit_body=x):
             return [b, x]
+        case ForkStmt(body=body):
+            return [body]
         case ParallelLocalStmt(branches=branches):
             return list(branches)
         case _:

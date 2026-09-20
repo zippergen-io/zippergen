@@ -6,16 +6,17 @@ returns the LocalStmt A must execute. See paper Tables for the projection rules.
 from __future__ import annotations
 
 from typing import cast
+from dataclasses import replace
 
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
-    ParallelStmt,
+    ParallelStmt, SpawnStmt, ForkStmt,
     SendStmt, RecvStmt, SelfAssignStmt, IfRecvStmt, WhileRecvStmt,
     ParallelLocalStmt,
     Lifeline, LocalStmt, AnyStmt, Var, VarExpr, LitExpr,
     make_kappa_ctrl, canonical_construct_key, participation_set,
     occurring_variables, seq,
-    Workflow,
+    Workflow, contains_spawn,
 )
 
 __all__ = ["project"]
@@ -72,7 +73,8 @@ class _Context:
     workflow generates the same names.
     """
 
-    def __init__(self, occupied: frozenset[str]) -> None:
+    def __init__(self, occupied: frozenset[str], sessions: bool = False) -> None:
+        self.sessions = sessions
         self._occupied = occupied
         self._issued = 0
         self._participation: dict[int, frozenset[Lifeline]] = {}
@@ -103,7 +105,7 @@ def _parallel_channel(stmt: ParallelStmt, branch_index: int, parent_channel: str
 # Core projection — structural recursion on Stmt
 # ---------------------------------------------------------------------------
 
-def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main") -> LocalStmt:
+def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main", site: str = "0") -> LocalStmt:
     """π_A(stmt) — one step of the structural recursion."""
 
     match stmt:
@@ -126,15 +128,26 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
 
         # act X(ys) := f(xs)
         case ActStmt(lifeline=X):
-            return stmt if A == X else EmptyStmt()
+            return (replace(stmt) if context.sessions else stmt) if A == X else EmptyStmt()
 
         # skip_X
         case SkipStmt(lifeline=X):
-            return stmt if A == X else EmptyStmt()
+            return (replace(stmt) if context.sessions else stmt) if A == X else EmptyStmt()
 
         # P1 ; P2
         case SeqStmt(first=p1, second=p2):
-            return cast(LocalStmt, seq(_project(p1, A, context, channel), _project(p2, A, context, channel)))
+            return cast(LocalStmt, seq(_project(p1, A, context, channel, site + ".0"), _project(p2, A, context, channel, site + ".1")))
+
+        case SpawnStmt(body=body, fresh=fresh):
+            if A not in context.participants(body):
+                return EmptyStmt()
+            child = _project(body, A, context, "main", site + ".0")
+            names = tuple(sorted(field.name for field in fresh if field.lifeline == A))
+            # Guard-only fields and declared but currently unused scratch cells
+            # are valid selections too. They need not occur in an action.
+            if any(name not in context._occupied for name in names):
+                raise ValueError(f"spawn fresh selects an undeclared field at {A.name}")
+            return ForkStmt(A, site, child, names)
 
         # parallel { P_i }_i
         case ParallelStmt(branches=branches):
@@ -143,8 +156,8 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
             for i, branch in enumerate(branches):
                 if A not in context.participants(branch):
                     continue
-                branch_channel = _parallel_channel(stmt, i, channel)
-                local_branches.append(_project(branch, A, context, branch_channel))
+                branch_channel = f"par-{site}-{i + 1}" if context.sessions else _parallel_channel(stmt, i, channel)
+                local_branches.append(_project(branch, A, context, branch_channel, site + f".{i}"))
                 branch_indices.append(i)
             if not local_branches:
                 return EmptyStmt()
@@ -153,7 +166,7 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
         # if c@B then P_⊤ else P_⊥
         case IfStmt(condition=c, owner=B, branch_true=p_true, branch_false=p_false):
             r_if = _receivers(p_true, p_false, B, context)
-            tag = make_kappa_ctrl(canonical_construct_key(stmt))   # κ_ctrl^P: keyed on construct content
+            tag = make_kappa_ctrl(site if context.sessions else canonical_construct_key(stmt))
 
             if A == B:
                 # Owner: prepend control broadcasts to each branch, then recurse.
@@ -162,11 +175,11 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
                     owner=B,
                     branch_true=seq(
                         *_ctrl_sends(B, True,  r_if, tag, channel),
-                        _project(p_true,  B, context, channel),
+                        _project(p_true, B, context, channel, site + ".0"),
                     ),
                     branch_false=seq(
                         *_ctrl_sends(B, False, r_if, tag, channel),
-                        _project(p_false, B, context, channel),
+                        _project(p_false, B, context, channel, site + ".1"),
                     ),
                 )
             elif A in frozenset(r_if):
@@ -176,8 +189,8 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
                     lifeline=A,
                     bindings=(VarExpr(ctrl), tag),
                     sender=B,
-                    branch_true=_project(p_true,  A, context, channel),
-                    branch_false=_project(p_false, A, context, channel),
+                    branch_true=_project(p_true, A, context, channel, site + ".0"),
+                    branch_false=_project(p_false, A, context, channel, site + ".1"),
                     channel=channel,
                 )
             else:
@@ -186,7 +199,7 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
         # while c@B do P_body exit P_exit
         case WhileStmt(condition=c, owner=B, body=p_body, exit_body=p_exit):
             r_while = _receivers(p_body, p_exit, B, context)
-            tag = make_kappa_ctrl(canonical_construct_key(stmt))   # κ_ctrl^P: keyed on construct content
+            tag = make_kappa_ctrl(site if context.sessions else canonical_construct_key(stmt))
 
             if A == B:
                 # Owner: prepend control broadcasts, then recurse.
@@ -195,11 +208,11 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
                     owner=B,
                     body=seq(
                         *_ctrl_sends(B, True,  r_while, tag, channel),
-                        _project(p_body, B, context, channel),
+                        _project(p_body, B, context, channel, site + ".0"),
                     ),
                     exit_body=seq(
                         *_ctrl_sends(B, False, r_while, tag, channel),
-                        _project(p_exit, B, context, channel),
+                        _project(p_exit, B, context, channel, site + ".1"),
                     ),
                 )
             elif A in frozenset(r_while):
@@ -209,8 +222,8 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
                     lifeline=A,
                     bindings=(VarExpr(ctrl), tag),
                     sender=B,
-                    body=_project(p_body, A, context, channel),
-                    exit_body=_project(p_exit, A, context, channel),
+                    body=_project(p_body, A, context, channel, site + ".0"),
+                    exit_body=_project(p_exit, A, context, channel, site + ".1"),
                     channel=channel,
                 )
             else:
@@ -247,4 +260,11 @@ def project(wf: Workflow, lifeline: Lifeline) -> LocalStmt:
         | {var.name for var in wf.vars}
         | {var.name for var, _lifeline in wf.outputs}
     )
-    return _project(wf.body, lifeline, _Context(frozenset(occupied)))
+    sessions = contains_spawn(wf.body)
+    local = _project(wf.body, lifeline, _Context(frozenset(occupied), sessions))
+    if sessions:
+        from zippergen.runtime import _collect_formula_guards
+        guards, _ = _collect_formula_guards(wf.body, wf.ns)
+        if guards:
+            raise ValueError("Experimental spawn does not yet support CPL guards")
+    return local

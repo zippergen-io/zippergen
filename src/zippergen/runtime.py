@@ -11,7 +11,7 @@ import json
 import math
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import cast
 import time
@@ -35,7 +35,7 @@ from zippergen.syntax import (
     is_kappa_ctrl,
     EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
-    ParallelStmt, ParallelLocalStmt,
+    ParallelStmt, ParallelLocalStmt, SpawnStmt, ForkStmt,
     VarExpr, LitExpr, Var, Json,
     LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
@@ -49,6 +49,7 @@ from zippergen.projection import project
 from zippergen.formula import Formula as _Formula, subformulas as _subformulas
 from zippergen.monitor import MonitorState
 from zippergen.channels import _SeqQueue, InProcessChannel  # noqa: F401
+from zippergen.sessions import ScopedChannel, SessionState
 
 __all__ = ["run", "mock_llm", "console_trace", "tee_traces"]
 
@@ -65,6 +66,7 @@ class PendingExternal:
     trace_start: dict | None = None
     trace_seq: int | None = None
     attempt_id: str | None = None
+    session: str | None = None
 
 
 @dataclass(frozen=True)
@@ -255,7 +257,7 @@ def tee_traces(*traces):
 # Helpers
 # ---------------------------------------------------------------------------
 
-Env = dict[str, object]
+Env = MutableMapping[str, object]
 
 
 class _CondEnv:
@@ -267,7 +269,7 @@ class _CondEnv:
     """
     __slots__ = ("_env", "_ns")
 
-    def __init__(self, env: dict, ns: dict) -> None:
+    def __init__(self, env: Mapping[str, object], ns: dict) -> None:
         object.__setattr__(self, "_env", env)
         object.__setattr__(self, "_ns", ns)
 
@@ -389,7 +391,7 @@ def _action_visible(action: object) -> bool:
 
 
 def _receive_any(
-    ch: InProcessChannel,
+    ch: InProcessChannel | ScopedChannel,
     receiver: str,
     pending_senders: set[str],
     channel: str,
@@ -598,7 +600,7 @@ def _input_hash(named_inputs: dict) -> str | None:
 def _step(
     stmt: Residual,
     env: Env,
-    ch: InProcessChannel,
+    ch: InProcessChannel | ScopedChannel,
     ns: dict,
     llm_backend,
     human_backend,
@@ -626,9 +628,28 @@ def _step(
         from zippergen.assistant_backends import make_cli_assistant_backend
         assistant_backend = make_cli_assistant_backend()
 
+    # Once an external call has returned, commit that exact action even if
+    # another previously blocked parallel branch has become enabled meanwhile.
+    if resolved is not None:
+        from zippergen.locator import _children
+        def selected(node):
+            return id(node) in resolved or any(selected(c) for c in _children(node))
+        if not selected(stmt):
+            return stmt, False
+
     match stmt:
         case EmptyStmt():
             return EmptyStmt(), False
+
+        case ForkStmt():
+            if not isinstance(ch, ScopedChannel):
+                raise RuntimeError("A fork requires a session scheduler")
+            child = ch.fork(stmt)
+            if trace:
+                trace({"type": "fork", "lifeline": stmt.lifeline.name,
+                       "site": stmt.site, "child_session": child,
+                       "fresh": list(stmt.fresh)})
+            return EmptyStmt(), True
 
         case SkipStmt():
             return EmptyStmt(), True
@@ -647,6 +668,16 @@ def _step(
                     stmt, env, ch, ns, llm_backend, human_backend, assistant_backend,
                     monitor, trace, formula_conditions, stop,
                 )
+                return EmptyStmt(), True
+            if (isinstance(action, HumanAction) and action.required
+                    and isinstance(ch, ScopedChannel) and ch.human_handler is not None):
+                result = ch.human_handler(ch, stmt, env, trace)
+                if result is None:
+                    # Publishing a request is itself a committed step. Do not
+                    # let another branch start an external call and roll back
+                    # that request while retaining its in-memory reference.
+                    return stmt, ch.state.dirty
+                env.update(result)
                 return EmptyStmt(), True
             in_vals = tuple(_eval(x, env) for x in ins)
             named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
@@ -862,7 +893,7 @@ def _step(
                 return cast(LocalStmt, seq(body, stmt)), True
             return cast(LocalStmt, exit_b), True
 
-        case ParallelLocalStmt(branches=branches, branch_indices=labels) if not durable:
+        case ParallelLocalStmt(branches=branches, branch_indices=labels) if not durable and not getattr(ch, "session_steps", False):
             _exec(
                 stmt, env, ch, ns, llm_backend, human_backend, assistant_backend,
                 monitor, trace, formula_conditions, stop,
@@ -898,7 +929,7 @@ def _step(
 def _exec(
     stmt: LocalStmt,
     env: Env,
-    ch: InProcessChannel,
+    ch: InProcessChannel | ScopedChannel,
     ns: dict,
     llm_backend,
     human_backend,
@@ -1245,7 +1276,23 @@ def _exec(
 def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, human_backend, assistant_backend,
                  monitor, trace, formula_conditions, stop):
     try:
-        _exec(local_stmt, env, ch, ns, llm_backend, human_backend, assistant_backend, monitor, trace, formula_conditions, stop)
+        from zippergen.sessions import SessionState, has_forks
+        if has_forks(local_stmt):
+            state = SessionState.start(local_stmt)
+            while not isinstance(state, EmptyStmt):
+                if stop.is_set():
+                    raise WorkflowCancelled("Workflow cancelled")
+                next_state, progressed = state.step(
+                    env, ch, ns, llm_backend, human_backend, trace, stop,
+                    assistant_backend=assistant_backend,
+                    monitor=monitor, formula_conditions=formula_conditions,
+                )
+                assert isinstance(next_state, (SessionState, EmptyStmt))
+                state = next_state
+                if not progressed:
+                    time.sleep(0.01)
+        else:
+            _exec(local_stmt, env, ch, ns, llm_backend, human_backend, assistant_backend, monitor, trace, formula_conditions, stop)
         result_box.append(env)
     except Exception as exc:
         stop.set()  # unblock any threads waiting on queue.get()
@@ -1295,6 +1342,8 @@ def _collect_formula_guards(stmt, ns: dict) -> tuple[list, dict[int, _Formula]]:
             case SeqStmt(first=p1, second=p2):
                 walk(p1)
                 walk(p2)
+            case SpawnStmt(body=body):
+                walk(body)
             case ParallelStmt(branches=branches):
                 for branch in branches:
                     walk(branch)

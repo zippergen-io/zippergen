@@ -913,9 +913,21 @@ def _run_durable_in_project(
 
     setattr(managed_human_backend, "claims_pending_human_tasks", True)
     setattr(managed_human_backend, "requires_main_thread", True)
+    from zippergen.syntax import contains_spawn, HumanAction
+    from zippergen.validation import workflow_action_sites
+
+    session_run = contains_spawn(workflow.body)
+    if session_run and human_connector_factory is None and any(
+        isinstance(action, HumanAction) and action.required
+        for _participant, action in workflow_action_sites(workflow)
+    ):
+        output_func(
+            "Approvals can wait in several sessions. In another terminal, use "
+            "'zg run tasks', then 'zg run approve --task TASK_ID --yes' or '--no'."
+        )
     selected_human_backend = (
         make_sqlite_human_backend()
-        if human_connector_factory is not None
+        if human_connector_factory is not None or session_run
         else managed_human_backend
     )
 

@@ -731,8 +731,8 @@ separately loaded, run, deployed, or durable sub-workflow. Use a top-level
 ## Parallel work
 
 Use a parallel region only for independent branches. Each branch must contain
-complete ordinary protocol statements, and the continuation runs after all
-branches complete.
+complete ordinary protocol statements. Each participant continues after its
+own work in all branches is complete. This is not a global barrier.
 
 ```python
 from zippergen import branch, parallel
@@ -746,6 +746,41 @@ with parallel:
 
 Do not create parallel branches that race on the same logical value or depend
 on one another's intermediate results.
+
+## Experimental detached sessions
+
+Use `spawn` when several protocol instances must overlap using the same
+participants. It is experimental. Keep ordinary independent work inside one
+protocol in `parallel`.
+
+```python
+from zippergen import spawn
+
+with spawn(fresh=(Mailbox.request, Writer.request, Writer.draft)):
+    Mailbox(request) >> Writer(request)
+    Writer: draft = draft_reply(request)
+```
+
+The parent continues without a join. Each participant copies its listed local
+fields at its own fork. Uninitialized fields remain uninitialized. List every
+scratch field that must be private to a request, including receive targets.
+Unlisted fields deliberately share the existing cell at that participant.
+Nested children inherit those bindings unless they freshen the field again.
+Freshness does not pass data between participants. Use messages for that.
+
+The body can call existing fragments. A zero-argument fragment can also be
+passed as `spawn(fragment_name, fresh=(...))`. Do not put a workflow return
+inside the body. There is no session handle, wait, join or cancellation API.
+
+Use durable execution for several pending human approvals. Its SQLite task
+backend lets other sessions proceed while one waits. Terminal prompts and
+ordinary external actions still occupy the participant until they return.
+CPL guards in spawn workflows are rejected for now. Bound intake in experiments
+because spawn does not yet impose a limit on active sessions.
+
+Test overlapping requests, both decision outcomes and fresh-process resume.
+Verify that parent intake can finish with children still pending. The checkout
+example is `examples/spawn/workflow.py`.
 
 ## Human actions
 

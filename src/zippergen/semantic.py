@@ -24,7 +24,7 @@ from zippergen.syntax import (
     LLMAction,
     LitExpr,
     MsgStmt,
-    ParallelStmt,
+    ParallelStmt, SpawnStmt,
     PlannerAction,
     PureAction,
     SeqStmt,
@@ -292,6 +292,11 @@ def workflow_semantics(
                 "body": walk(stmt.body, (*context, marker + "=body")),
                 "exit": walk(stmt.exit_body, (*context, marker + "=exit")),
             }
+        if isinstance(stmt, SpawnStmt):
+            fresh = sorted(f"{f.lifeline.name}.{f.name}" for f in stmt.fresh)
+            regions.append({"kind": "spawn", "fresh": fresh, "context": list(context)})
+            return {"node": "spawn", "fresh": fresh,
+                    "body": walk(stmt.body, (*context, "spawn:" + ",".join(fresh)))}
         if isinstance(stmt, ParallelStmt):
             regions.append({
                 "kind": "parallel",

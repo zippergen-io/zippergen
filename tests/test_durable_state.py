@@ -587,6 +587,49 @@ def test_a_model_call_is_repeated_when_its_result_did_not_commit(tmp_path):
     assert len(seen) == 2, "an uncommitted model call is made again"
 
 
+def test_resolved_model_result_commits_before_newly_enabled_parallel_receive(tmp_path):
+    """A message arriving during the call must not steal its result commit."""
+    from zippergen.store import DurableChannel
+    from zippergen.syntax import ParallelLocalStmt, RecvStmt
+
+    @workflow
+    def racing():
+        message = Var("message", int)
+        with parallel:
+            with branch:
+                B(7) >> A(message)
+            with branch:
+                A: answer = ask_model(1)
+
+    local = project(racing, A)
+    assert isinstance(local, ParallelLocalStmt)
+    receive = local.branches[0]
+    assert isinstance(receive, RecvStmt)
+    store = str(tmp_path / "parallel-result.sqlite")
+    seen = []
+
+    def backend(action, inputs):
+        seen.append(inputs)
+        conn = open_store(store)
+        try:
+            DurableChannel(conn, "B").put("B", "A", receive.channel, (7,))
+        finally:
+            conn.close()
+        return {"answer": "99"}
+
+    # Stop after the result commit and before the next successful commit.
+    assert _drive(store, racing, A, {}, budget=1, llm_backend=backend) == "crashed"
+    saved = _state(store, "A")["env"]
+    assert saved == {"answer": "99"}
+    assert len(_messages(store)) == 1
+    assert len(seen) == 1
+
+    assert _drive(store, racing, A, {}, llm_backend=backend) == "done"
+    assert _state(store, "A")["env"] == {"answer": "99", "message": 7}
+    assert not _messages(store)
+    assert len(seen) == 1
+
+
 # ---------------------------------------------------------------------------
 # 13-14. Human tasks
 # ---------------------------------------------------------------------------

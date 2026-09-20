@@ -66,6 +66,7 @@ from zippergen.store import (
     set_role_status,
     write_role_state,
 )
+from zippergen.sessions import SessionState, has_forks
 from zippergen.syntax import (
     ActStmt,
     AssistantAction,
@@ -160,6 +161,7 @@ class RoleRunner:
         if state is not None:
             return self._adopt(state)
         seeded = dict(env)
+        initial = SessionState.start(self.local_stmt) if has_forks(self.local_stmt) else self.local_stmt
         _begin_immediate(self.conn, self.stop)
         try:
             # Another process may have raced us; the first writer wins and we
@@ -173,7 +175,7 @@ class RoleRunner:
                 self.conn,
                 self.role,
                 env=seeded,
-                control=encode_control(self.local_stmt, self.local_stmt),
+                control=encode_control(self.local_stmt, initial),
                 monitor=self._monitor_state(),
                 steps=0,
                 status="running",
@@ -182,7 +184,7 @@ class RoleRunner:
         except BaseException:
             self.conn.execute("ROLLBACK")
             raise
-        return seeded, self.local_stmt
+        return seeded, initial
 
     def _adopt(self, state: dict):
         if self.monitor is not None and state["monitor"] is not None:
@@ -255,6 +257,8 @@ class RoleRunner:
             return "done", {}
         if not blocked:
             return "running", {}
+        if isinstance(residual, SessionState) and any(s.waiting for s in residual.sessions.values()):
+            return "waiting_human", {}
         receives = (RecvStmt, IfRecvStmt, WhileRecvStmt)
         nodes = [
             node
@@ -359,6 +363,48 @@ class RoleRunner:
         )
         return {node.outputs[0].name: answer[action.output]}
 
+    def _session_human(self, channel, node, env, trace):
+        from zippergen.runtime import _eval, _next_act_seq, _jsonify
+        import copy
+        session = channel.session
+        path = self.node_paths[id(node)]
+        key = json.dumps(path)
+        waiting = session.waiting.get(key)
+        action = node.action
+        if waiting is None:
+            values = tuple(_eval(expr, env) for expr in node.inputs)
+            inputs = copy.deepcopy({name: value for (name, _), value in zip(action.inputs, values)})
+            input_hash = _input_hash(inputs)
+            task_id = human_task_id(self.role, path, input_hash, [session.name, session.steps])
+            task, _ = ensure_human_task(
+                self.conn, task_id=task_id, role=self.role, locator=path,
+                action=action.name, input_hash=input_hash, inputs=inputs,
+                spec=build_human_task_spec(action, inputs),
+            )
+            waiting = {"task_id": task_id, "inputs": inputs, "seq": _next_act_seq()}
+            session.waiting[key] = waiting
+            channel.state.dirty = True
+            if trace:
+                trace({"type": "act_start", "lifeline": self.role,
+                       "action": action.name, "action_kind": "human",
+                       "inputs": _jsonify(inputs), "seq": waiting["seq"],
+                       "task_id": task_id, "attempt_id": task_id})
+        else:
+            task = load_human_task(self.conn, waiting["task_id"])
+        if task is None or task["status"] in {"failed", "cancelled"}:
+            raise RuntimeError("Spawned human task disappeared or was cancelled")
+        if task["status"] != "done":
+            return None
+        answer = validate_human_task_result(task["spec"], task["result"] or {}, context="Spawned human task")
+        outputs = {node.outputs[0].name: answer[action.output]}
+        del session.waiting[key]
+        if trace:
+            trace({"type": "act", "lifeline": self.role, "action": action.name,
+                   "action_kind": "human", "inputs": _jsonify(waiting["inputs"]),
+                   "outputs": _jsonify(outputs), "seq": waiting["seq"],
+                   "task_id": waiting["task_id"], "attempt_id": waiting["task_id"]})
+        return outputs
+
     def _human_task_nonce(self) -> int:
         """Distinguish repeat visits to the same human action across a loop.
 
@@ -443,11 +489,20 @@ class RoleRunner:
             # and this call is made with no transaction open, so a long wait
             # here blocks nothing but itself.
             stop=self.stop,
-            trace=self.trace,
+            trace=(lambda event: self.trace({**event, "session": pending.session}))
+            if pending.session is not None else self.trace,
         ))
 
     # ---- the loop ---------------------------------------------------------
     def step(self, residual, *, resolved: dict | None = None):
+        if isinstance(residual, SessionState):
+            handler = self._session_human if getattr(self.human_backend, "uses_sqlite_human_tasks", False) else None
+            return residual.step(
+                self.env, self.channel, self.ns, self.llm_backend, self.human_backend,
+                self.trace, self.stop, durable=True, assistant_backend=self.assistant_backend,
+                resolved=resolved, human_handler=handler,
+                monitor=self.monitor, formula_conditions=self.formula_conditions,
+            )
         return _step(
             residual,
             self.env,
@@ -513,6 +568,7 @@ class RoleRunner:
                                 ),
                                 "error": type(exc).__name__,
                                 "message": " ".join(str(exc).split())[:500],
+                                **({"session": out.session} if out.session is not None else {}),
                             })
                         except Exception:
                             # Failure evidence is best-effort and must never

@@ -1316,9 +1316,11 @@ def _run_workflow_from_project(args, workspace) -> int:
         "store_path": store_path,
         "assistant_root": str(workspace.root),
     }
-    if connector_factory is not None:
+    if connector_factory is not None or internal_store:
         from zippergen.human_backends import make_sqlite_human_backend
 
+        # Deployed runs use their durable task queue, including when pools
+        # force SQLite execution. Only disposable local runs prompt inline.
         configure_kwargs["human_backend"] = make_sqlite_human_backend()
     elif uses_pools:
         from zippergen.human_backends import make_cli_human_backend

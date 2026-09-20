@@ -16,9 +16,12 @@ from zippergen.syntax import (
     AssistantAction,
     EffectAction,
     IfStmt,
+    MsgStmt,
     ParallelStmt,
+    SpawnStmt,
     SeqStmt,
     WhileStmt,
+    VarExpr,
     Workflow,
     _ordered_workflow_lifelines,
 )
@@ -44,6 +47,8 @@ def workflow_action_sites(
         elif isinstance(stmt, WhileStmt):
             visit(stmt.body)
             visit(stmt.exit_body)
+        elif isinstance(stmt, SpawnStmt):
+            visit(stmt.body)
         elif isinstance(stmt, ParallelStmt):
             for branch in stmt.branches:
                 visit(branch)
@@ -75,6 +80,53 @@ def assistant_actions(workflow: Workflow) -> tuple[AssistantAction, ...]:
     )
 
 
+def _spawn_sharing_checks(workflow: Workflow) -> list[dict[str, object]]:
+    """Warn about writes through inherited cells, without forbidding sharing.
+
+    Nested freshening stops a write from reaching the enclosing session's
+    cell. Reads and mutations hidden inside Python actions are not analysed.
+    """
+    checks: list[dict[str, object]] = []
+
+    def visit(stmt, site: str) -> set[tuple[str, str]]:
+        if isinstance(stmt, ActStmt):
+            return {(stmt.lifeline.name, value.name) for value in stmt.outputs}
+        if isinstance(stmt, MsgStmt):
+            return {(stmt.receiver.name, value.var.name) for value in stmt.bindings
+                    if isinstance(value, VarExpr)}
+        if isinstance(stmt, SpawnStmt):
+            writes = visit(stmt.body, site + ".0")
+            fresh = {(field.lifeline.name, field.name) for field in stmt.fresh}
+            inherited = writes - fresh
+            if inherited:
+                fields = ", ".join(f"{owner}.{name}" for owner, name in sorted(inherited))
+                checks.append({
+                    "status": "warn",
+                    "name": f"spawn shared writes at {site}",
+                    "detail": (
+                        f"{fields}: assigned inside spawn but omitted from fresh. "
+                        "These cells are shared with the parent and may be shared "
+                        "with other sessions. Add per-request fields to fresh. "
+                        "Keep them omitted only when sharing is intentional, "
+                        "for example a shared accumulator."
+                    ),
+                })
+            return inherited
+        children = ()
+        if isinstance(stmt, SeqStmt):
+            children = (stmt.first, stmt.second)
+        elif isinstance(stmt, IfStmt):
+            children = (stmt.branch_true, stmt.branch_false)
+        elif isinstance(stmt, WhileStmt):
+            children = (stmt.body, stmt.exit_body)
+        elif isinstance(stmt, ParallelStmt):
+            children = stmt.branches
+        return set().union(*(visit(child, f"{site}.{i}") for i, child in enumerate(children)))
+
+    visit(workflow.body, "0")
+    return checks
+
+
 def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, object]:
     lifelines = _ordered_workflow_lifelines(workflow)
     checks: list[dict[str, object]] = []
@@ -102,6 +154,7 @@ def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, objec
             else "every participant reads only values definitely available locally"
         ),
     })
+    checks.extend(_spawn_sharing_checks(workflow))
 
     projections: dict[str, str] = {}
     for lifeline in lifelines:

@@ -32,7 +32,7 @@ __all__ = [
     # Statements
     "Stmt",
     "EmptyStmt", "MsgStmt", "ActStmt", "SkipStmt",
-    "SeqStmt", "IfStmt", "WhileStmt", "ParallelStmt",
+    "SeqStmt", "IfStmt", "WhileStmt", "ParallelStmt", "SpawnStmt", "ForkStmt", "Field",
     # Local-only statements (produced by projection)
     "LocalStmt", "AnyStmt",
     "SendStmt", "RecvStmt", "SelfAssignStmt", "IfRecvStmt", "WhileRecvStmt",
@@ -130,6 +130,11 @@ class Lifeline:
     def __repr__(self) -> str:
         return self.name
 
+    def __getattr__(self, name: str) -> "Field":
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return Field(self, name)
+
     def __rmatmul__(self, other: object) -> "ZTypeAtLifeline":
         """Support ``str @ Planner`` (annotation)."""
         if is_ztype(other):
@@ -138,6 +143,13 @@ class Lifeline:
             f"Unsupported use of '@': {other!r} @ {self.name}. "
             f"Use  ZType @ Lifeline  for annotations (e.g. str @ Doctor)."
         )
+
+
+@dataclass(frozen=True)
+class Field:
+    """A participant-qualified field selection, used by spawn freshness."""
+    lifeline: Lifeline
+    name: str
 
 
 @dataclass(frozen=True)
@@ -252,20 +264,14 @@ Expr = Union[VarExpr, LitExpr]
 # Per-construct control tags — used only by the projection engine in control-broadcast
 # messages (send B(⊤, κ_ctrl^P) → C).  Must not appear in user-written programs.
 #
-# The tag is keyed on program CONTENT (the paper's κ_ctrl^P, indexed by the
-# sub-program P), NOT on id(stmt): a memory address is process-local, so an
-# id-based tag differs between the owner's process and each receiver's process
-# and coordination fails.  A content key is identical in every process that
-# imports the same workflow, and — being derived from the construct's syntax —
-# distinct constructs get distinct tags so a misrouted control message fails
-# loudly at bind time.  Structurally-identical constructs may share a tag; that
-# is provably harmless (it degrades locally to a single globally-fresh tag,
-# which is sufficient for correctness) because FIFO ordering disambiguates them.
+# Keys must agree across endpoint processes, so they never use id(stmt).
+# Existing workflows use structural digests. Spawn workflows use static
+# source-tree paths, with the dynamic session distinguished by the channel.
 def make_kappa_ctrl(construct_key: str) -> LitExpr:
-    """Return the dedicated control tag for a construct, keyed on its content.
+    """Return a control tag from a deterministic projection key.
 
-    ``construct_key`` is the canonical structural digest from
-    ``canonical_construct_key``; equal content ⇒ equal tag in every process.
+    ``construct_key`` is a canonical structural digest for existing workflows
+    or a static source-tree path for workflows containing spawn.
     """
     return LitExpr(ControlTag(construct_key), ControlTag)
 
@@ -341,6 +347,9 @@ def _canon_stmt(node: "AnyStmt") -> str:
             return f"if({_canon_cond(c)}@{b.name},{_canon_stmt(t)},{_canon_stmt(f)})"
         case WhileStmt(condition=c, owner=b, body=bd, exit_body=ex):
             return f"while({_canon_cond(c)}@{b.name},{_canon_stmt(bd)},{_canon_stmt(ex)})"
+        case SpawnStmt(body=body, fresh=fresh):
+            fields = ",".join(f"{f.lifeline.name}.{f.name}" for f in fresh)
+            return f"spawn({fields};{_canon_stmt(body)})"
         case ParallelStmt(branches=branches):
             return "par(" + "|".join(_canon_stmt(b) for b in branches) + ")"
         case _:
@@ -628,7 +637,32 @@ class ParallelStmt:
         return f"parallel {{ {body} }}"
 
 
-Stmt = Union[EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt, ParallelStmt]
+@dataclass(frozen=True)
+class SpawnStmt:
+    """Detached session over existing participants. Selected cells copy at fork."""
+    body: AnyStmt
+    fresh: tuple[Field, ...] = ()
+
+    def __post_init__(self) -> None:
+        if any(not isinstance(field, Field) for field in self.fresh):
+            raise TypeError("spawn fresh must contain participant fields, e.g. Writer.draft")
+        if len(set(self.fresh)) != len(self.fresh):
+            raise ValueError("spawn fresh contains a duplicate field")
+        roles = participation_set(self.body)
+        if any(field.lifeline not in roles for field in self.fresh):
+            raise ValueError("spawn fresh selects a participant absent from its body")
+
+
+@dataclass(frozen=True)
+class ForkStmt:
+    """Local fork with a static source site and a projected child template."""
+    lifeline: Lifeline
+    site: str
+    body: LocalStmt
+    fresh: tuple[str, ...] = ()
+
+
+Stmt = Union[EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt, ParallelStmt, SpawnStmt]
 
 
 # ---------------------------------------------------------------------------
@@ -752,7 +786,7 @@ class ParallelLocalStmt:
 
 LocalStmt = Union[
     EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
-    SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelLocalStmt,
+    SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelLocalStmt, ForkStmt,
 ]
 
 # Union covering both global (Stmt) and local (LocalStmt) programs.
@@ -760,8 +794,22 @@ LocalStmt = Union[
 # and for functions that operate on either kind of program.
 AnyStmt = Union[
     EmptyStmt, MsgStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
-    SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelStmt, ParallelLocalStmt,
+    SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelStmt, ParallelLocalStmt, SpawnStmt, ForkStmt,
 ]
+
+
+def contains_spawn(stmt: AnyStmt) -> bool:
+    if isinstance(stmt, SpawnStmt):
+        return True
+    if isinstance(stmt, SeqStmt):
+        return contains_spawn(stmt.first) or contains_spawn(stmt.second)
+    if isinstance(stmt, IfStmt):
+        return contains_spawn(stmt.branch_true) or contains_spawn(stmt.branch_false)
+    if isinstance(stmt, WhileStmt):
+        return contains_spawn(stmt.body) or contains_spawn(stmt.exit_body)
+    if isinstance(stmt, ParallelStmt):
+        return any(contains_spawn(branch) for branch in stmt.branches)
+    return False
 
 
 def _ordered_workflow_lifelines(wf: "Workflow") -> tuple[Lifeline, ...]:
@@ -996,6 +1044,8 @@ def _participation_set(
             return frozenset({b}) | _participants(p1, memo) | _participants(p2, memo)
         case WhileStmt(owner=b, body=p, exit_body=q):
             return frozenset({b}) | _participants(p, memo) | _participants(q, memo)
+        case SpawnStmt(body=body) | ForkStmt(body=body):
+            return _participants(body, memo)
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
             branch_participants: frozenset[Lifeline] = frozenset()
             for branch in branches:
@@ -1045,6 +1095,8 @@ def occurring_variable_declarations(stmt: AnyStmt) -> frozenset[Var]:
             return occurring_variable_declarations(p1) | occurring_variable_declarations(p2)
         case WhileStmt(body=p, exit_body=q):
             return occurring_variable_declarations(p) | occurring_variable_declarations(q)
+        case SpawnStmt(body=body) | ForkStmt(body=body):
+            return occurring_variable_declarations(body)
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
             in_branches: frozenset[Var] = frozenset()
             for branch in branches:
@@ -1154,6 +1206,11 @@ def pp(node: AnyStmt, indent: int = 0) -> str:
                 f"{pad}exit:",
                 pp(exit_b, indent + 1),
             ])
+        case SpawnStmt(body=body, fresh=fresh):
+            fields = ", ".join(f"{f.lifeline.name}.{f.name}" for f in fresh)
+            return f"{pad}spawn fresh=({fields}):\n" + pp(body, indent + 1)
+        case ForkStmt(body=body, site=site, fresh=fresh):
+            return f"{pad}fork {site} fresh={fresh}:\n" + pp(body, indent + 1)
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
             lines = [f"{pad}parallel:"]
             indices = node.branch_indices if isinstance(node, ParallelLocalStmt) and node.branch_indices else tuple(range(len(branches)))
