@@ -261,6 +261,10 @@ def project(wf: Workflow, lifeline: Lifeline) -> LocalStmt:
         | {var.name for var, _lifeline in wf.outputs}
     )
     sessions = contains_spawn(wf.body)
+    if sessions:
+        # A declared field may occur only in a guard, including one inside a
+        # fragment. It is still a valid copy-on-fork selection.
+        occupied |= {value.name for value in wf.ns.values() if isinstance(value, Var)}
     local = _project(wf.body, lifeline, _Context(frozenset(occupied), sessions))
     if sessions:
         from zippergen.runtime import _collect_formula_guards

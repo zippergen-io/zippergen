@@ -9,8 +9,9 @@ import ast
 import inspect
 import sys
 import textwrap
+from dataclasses import dataclass, replace
 from collections.abc import Callable
-from typing import cast
+from typing import Literal, cast
 
 from zippergen.formula import __all__ as _FORMULA_NAMES
 from zippergen.syntax import (
@@ -22,6 +23,7 @@ from zippergen.syntax import (
     LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Workflow,
     seq, is_json_value, is_ztype,
+    occurring_variable_declarations,
 )
 
 __all__ = [
@@ -30,7 +32,7 @@ __all__ = [
     # Fragment decorator
     "fragment",
     # Statement builders
-    "msg", "act", "skip", "parallel", "branch", "spawn",
+    "msg", "act", "skip", "parallel", "branch", "spawn", "all_except",
     "if_", "while_",
 ]
 
@@ -198,17 +200,119 @@ def parallel_(*branches: Callable) -> None:
     _record(ParallelStmt(tuple(_collect(branch) for branch in branches)))
 
 
-def spawn(body: Callable | None = None, *, fresh: tuple[Field, ...] = ()):
+@dataclass(frozen=True)
+class _AllExcept:
+    excluded: tuple[Field, ...]
+
+
+def all_except(*fields: Field) -> _AllExcept:
+    """Infer fresh spawn fields except these inherited participant-local cells.
+
+    Use ``spawn(fresh=all_except(Writer.preferences))``. Exclusions retain the
+    current binding, including an ancestor's fresh cell in nested spawns.
+    Every exclusion must be used by the spawned body. This is a builder
+    selector, not a runtime sharing annotation or warning suppression.
+    """
+    if any(not isinstance(field, Field) for field in fields):
+        raise TypeError("all_except expects participant fields, for example Writer.preferences")
+    if len(set(fields)) != len(fields):
+        raise ValueError("all_except contains duplicate participant fields")
+    return _AllExcept(tuple(fields))
+
+
+@dataclass(frozen=True)
+class _AllFreshSpawn(SpawnStmt):
+    """Builder-only marker, expanded before publishing the workflow IR."""
+    excluded: tuple[Field, ...] = ()
+
+
+def _expand_all_fresh(stmt, known_variables):
+    from zippergen.availability import _guard_variables
+
+    def fields(node):
+        found = set()
+        if isinstance(node, ActStmt):
+            found.update(Field(node.lifeline, expr.var.name) for expr in node.inputs
+                         if isinstance(expr, VarExpr))
+            found.update(Field(node.lifeline, var.name) for var in node.outputs)
+        elif isinstance(node, MsgStmt):
+            for role, exprs in ((node.sender, node.payload), (node.receiver, node.bindings)):
+                found.update(Field(role, expr.var.name) for expr in exprs
+                             if isinstance(expr, VarExpr))
+        elif isinstance(node, (IfStmt, WhileStmt)):
+            if not isinstance(getattr(node.condition, "_src", None), str):
+                raise ValueError(
+                    'spawn fresh="all" needs inspectable guards. Use owned if/while '
+                    'syntax, or list fresh fields explicitly for callable builder guards.'
+                )
+            found.update(Field(node.owner, name)
+                         for name in _guard_variables(node.condition, known_variables))
+        if isinstance(node, SpawnStmt):
+            found.update(node.fresh)
+        for child in children(node):
+            found.update(fields(child))
+        return found
+
+    def children(node):
+        if isinstance(node, SeqStmt):
+            return (node.first, node.second)
+        if isinstance(node, IfStmt):
+            return (node.branch_true, node.branch_false)
+        if isinstance(node, WhileStmt):
+            return (node.body, node.exit_body)
+        if isinstance(node, ParallelStmt):
+            return node.branches
+        if isinstance(node, SpawnStmt):
+            return (node.body,)
+        return ()
+
+    def expand(node):
+        if isinstance(node, SeqStmt):
+            return replace(node, first=expand(node.first), second=expand(node.second))
+        if isinstance(node, IfStmt):
+            return replace(node, branch_true=expand(node.branch_true), branch_false=expand(node.branch_false))
+        if isinstance(node, WhileStmt):
+            return replace(node, body=expand(node.body), exit_body=expand(node.exit_body))
+        if isinstance(node, ParallelStmt):
+            return replace(node, branches=tuple(expand(b) for b in node.branches))
+        if isinstance(node, SpawnStmt):
+            body = expand(node.body)
+            if isinstance(node, _AllFreshSpawn):
+                used = fields(body)
+                excluded = set(node.excluded)
+                missing = excluded - used
+                if missing:
+                    names = ", ".join(sorted(f"{f.lifeline.name}.{f.name}" for f in missing))
+                    raise ValueError(f"all_except fields not used by the spawned body: {names}")
+                return SpawnStmt(body, tuple(sorted(used - excluded, key=lambda f: (f.lifeline.name, f.name))))
+            return replace(node, body=body)
+        return node
+
+    return expand(stmt)
+
+
+def spawn(body: Callable | None = None, *,
+          fresh: tuple[Field, ...] | Literal["all"] | _AllExcept = ()):
     """Experimental detached session. Use ``with spawn(fresh=(A.x,))``.
 
     A zero-argument fragment may also be passed as ``spawn(fragment, fresh=...)``.
     Fields copy their current local values at each endpoint's fork. No join.
+    ``fresh="all"`` copies every field read or written in the child body,
+    including guards and nested fragments. It expands to an ordinary field list.
+    ``fresh=all_except(A.x)`` infers that list but keeps A.x's current binding.
     """
     if body is None:
         raise TypeError("spawn must be used inside a @workflow with block or given a fragment")
     if not callable(body) or isinstance(body, Workflow):
         raise TypeError("spawn body must be a zero-argument fragment, or use a with block")
-    _record(SpawnStmt(_collect(body), tuple(fresh)))
+    if isinstance(fresh, _AllExcept):
+        _record(_AllFreshSpawn(_collect(body), excluded=fresh.excluded))
+    elif isinstance(fresh, str):
+        if fresh != "all":
+            raise ValueError('spawn fresh must be "all", all_except(...), or a tuple of participant fields')
+        _record(_AllFreshSpawn(_collect(body)))
+    else:
+        _record(SpawnStmt(_collect(body), tuple(fresh)))
 
 
 def if_(
@@ -400,10 +504,11 @@ class _ProcTransformer(ast.NodeTransformer):
     All other Python statements pass through unchanged.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, lifeline_names: frozenset[str] = frozenset()) -> None:
         super().__init__()
         self.return_outputs: list[tuple[str, str]] = []  # [(var_name, lifeline_name), ...]
         self.action_outputs: list[tuple[str, ast.expr, int, int]] = []
+        self.lifeline_names = lifeline_names
 
     def _remember_action_outputs(self, action_ast: ast.expr, outputs: list[ast.expr]) -> None:
         """Remember ``name = action(...)`` outputs for automatic Var inference."""
@@ -469,6 +574,11 @@ class _ProcTransformer(ast.NodeTransformer):
         """Rewrite ``Lifeline: outputs = action(inputs)`` to ``act(...)``."""
         self.generic_visit(node)
         if node.value is None or not isinstance(node.value, ast.Call):
+            if isinstance(node.target, ast.Name) and node.target.id in self.lifeline_names:
+                raise SyntaxError(
+                    "Participant assignments must call a declared action, e.g. "
+                    "Mailbox: settled = now_settled(). Literal assignments are not supported."
+                )
             return node
         # Target has Store context; rebuild as Load for use as a function arg.
         target = node.target
@@ -514,7 +624,7 @@ class _ProcTransformer(ast.NodeTransformer):
                 and isinstance(lifeline_ast.func, ast.Name)
                 and lifeline_ast.func.id == "spawn"):
             if lifeline_ast.args or any(k.arg != "fresh" for k in lifeline_ast.keywords):
-                raise SyntaxError("with spawn accepts only fresh=(Participant.field, ...)")
+                raise SyntaxError('with spawn accepts only fresh=(Participant.field, ...) or fresh="all"')
             if any(isinstance(n, ast.Return) for statement in node.body for n in ast.walk(statement)):
                 raise SyntaxError("spawn has no return or join. Return belongs to the parent workflow")
             name = _fresh("spawn")
@@ -758,7 +868,9 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, list[tuple[str, str]
             node.decorator_list = []
             break
 
-    transformer = _ProcTransformer()
+    transformer = _ProcTransformer(frozenset(
+        name for name, value in fn.__globals__.items() if isinstance(value, Lifeline)
+    ))
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
 
@@ -872,6 +984,12 @@ def workflow(fn: Callable) -> Workflow:
     # Execute the transformed body once to record all statements.
     kwargs = {name: Var(name, ztype) for name, ztype, _ll in inputs}
     body = _collect(lambda: transformed(**kwargs))
+    known_variables = frozenset(
+        value.name for value in (*fn.__globals__.values(), *inferred_vars.values(),
+                                *kwargs.values(), *occurring_variable_declarations(body))
+        if isinstance(value, Var)
+    )
+    body = _expand_all_fresh(body, known_variables)
 
     # Resolve each return (var_name, lifeline_name) pair.
     resolved_outputs: list[tuple[Var, Lifeline]] = []

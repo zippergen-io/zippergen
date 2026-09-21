@@ -662,6 +662,10 @@ def _step(
             return EmptyStmt(), True
 
         case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
+            if durable and isinstance(action, EffectAction) and resolved is None:
+                ready = getattr(ch, "effect_ready", None)
+                if ready is not None and not ready(stmt):
+                    return stmt, False
             if not durable or isinstance(action, PureAction):
                 # in-process, or a pure (deterministic) act that is cheap to redo
                 _exec(
@@ -1042,7 +1046,14 @@ def _exec(
                 })
             out_map: dict[str, object]
             if isinstance(action, (PureAction, EffectAction)):
-                out_map = _python_action_out_map(action, in_vals, outs)
+                from zippergen.actions import EffectPending
+                try:
+                    out_map = _python_action_out_map(action, in_vals, outs)
+                except EffectPending as exc:
+                    raise RuntimeError(
+                        "EffectPending requires an @effect executed by the SQLite runner. "
+                        "Use run_sqlite or zg run --durable."
+                    ) from exc
             elif isinstance(action, PlannerAction):
                 out_map = {
                     outs[0].name: _exec_planner(

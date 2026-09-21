@@ -284,7 +284,7 @@ def _trace_row(
             detail += f" · {_trace_fields(bindings)}"
         kind = "control receive" if event.get("ctrl") else "receive"
         return timestamp, f"#{item['rowid']}", role, kind, detail
-    if event_type in {"act_start", "act", "act_failed"}:
+    if event_type in {"act_start", "act", "act_failed", "act_wait"}:
         action = event.get("action", "?")
         action_kind = event.get("action_kind") or "action"
         phase = (
@@ -292,6 +292,7 @@ def _trace_row(
             if event_type == "act_start" and incomplete
             else "start" if event_type == "act_start"
             else "failed" if event_type == "act_failed"
+            else "waiting" if event_type == "act_wait"
             else "done"
         )
         detail = str(action) + session
@@ -305,7 +306,7 @@ def _trace_row(
             if event_type == "act"
             else {
                 key: event[key]
-                for key in ("error", "message")
+                for key in ("error", "message", "retry_after")
                 if event.get(key)
             }
         ) or {}
@@ -381,7 +382,7 @@ def _trace_rows(
             continue
         if event.get("type") == "act_start":
             starts.setdefault(key, []).append((int(item["rowid"]), timestamp))
-        elif event.get("type") in {"act", "act_failed"} and starts.get(key):
+        elif event.get("type") in {"act", "act_failed", "act_wait"} and starts.get(key):
             start_rowid, started_at = starts[key].pop()
             matched_starts.add(start_rowid)
             stored_ms = event.get("duration_ms")

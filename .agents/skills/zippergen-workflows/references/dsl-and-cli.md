@@ -768,6 +768,30 @@ Unlisted fields deliberately share the existing cell at that participant.
 Nested children inherit those bindings unless they freshen the field again.
 Freshness does not pass data between participants. Use messages for that.
 
+Use `with spawn(fresh="all"):` when all fields used by the child should be
+session-private. It expands to the explicit participant-qualified fields read
+or written in the body, including guards, receive targets and nested fragments.
+Views and semantic snapshots show the expanded list. This removes a manual
+scratch-field list. Use `fresh=all_except(Writer.preferences)` to infer private
+fields while preserving selected existing participant-local cells. Import
+`all_except` from `zippergen`. An exclusion keeps its current binding, including
+an ancestor's fresh cell in a nested spawn. Only fields used by the child may
+be excluded. Shared writes still warn. An explicit freshness tuple also remains
+available. None of these forms isolates Python globals or external resources.
+
+For shared preferences, keep a durable `Var` at the owning participant and
+update it through explicit protocol messages and actions. Drafts can read the
+shared cell when they are created while pending approvals retain their already
+created draft. Do not use mutable module globals for persistent memory. Sharing
+one field does not make a sequence of actions atomic across sessions.
+
+For intake, retain a redeliverable claim, commit the intake participant's local
+fork, then acknowledge in the parent before claiming again. An effect that
+acknowledges and returns a claim can lose its identity if it crashes before
+that result commits. Test before/after acknowledgement and the local fork
+commit separately. The external service must support redelivery and idempotent
+acknowledgement. Spawn does not make two stores atomic.
+
 The body can call existing fragments. A zero-argument fragment can also be
 passed as `spawn(fragment_name, fresh=(...))`. Do not put a workflow return
 inside the body. There is no session handle, wait, join or cancellation API.
@@ -775,6 +799,14 @@ inside the body. There is no session handle, wait, join or cancellation API.
 Use durable execution for several pending human approvals. Its SQLite task
 backend lets other sessions proceed while one waits. Terminal prompts and
 ordinary external actions still occupy the participant until they return.
+For a bounded external probe, the SQLite runner also supports
+`raise EffectPending(retry_after=1)` from an `@effect`. This parks only the
+continuation without committing an empty result. Other sessions/branches may
+run, and restart rechecks the probe. Use `visible=False` for quiet operational
+polls. Visible probes record each attempt. Only raise this while retrying is
+safe, never to hide an uncertain mutation or provider failure. Inputs are read
+again on each probe, so isolate changing correlation fields. The optional
+in-memory `run` API does not support this facility.
 CPL guards in spawn workflows are rejected for now. Bound intake in experiments
 because spawn does not yet impose a limit on active sessions.
 

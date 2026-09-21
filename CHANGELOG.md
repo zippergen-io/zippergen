@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Added `spawn(fresh=all_except(Writer.preferences))` to infer private child
+  fields while retaining selected existing participant-local cells. Invalid
+  exclusions fail during construction. Nested exclusions inherit the current
+  binding, and views retain the expanded ordinary freshness list.
+- Added `spawn(fresh="all")` as shorthand for the participant-local fields
+  used in the child body. Views and semantic snapshots retain the expanded
+  list. Explicit tuples and default inheritance keep their meaning.
+- SQLite polling effects can raise `EffectPending(retry_after=...)` to yield
+  without committing an empty result. Other sessions and parallel branches
+  remain runnable. Quiet polls use `visible=False`. See
+  [polling effects](docs/polling-effects.md) for retry and runner limits.
+- Unsupported participant assignments such as `Mailbox: settled = True` now
+  fail during workflow construction instead of disappearing from the protocol.
+- Spawn freshness now accepts module-level fields used only in guards.
 - Fixed durable parallel execution losing an external action's result when a
   receive in another branch became enabled during the call. The returned
   result now commits to the action that requested it, without repeating the

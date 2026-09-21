@@ -35,6 +35,7 @@ import time
 from typing import Any, cast
 
 from zippergen.errors import WorkflowCancelled
+from zippergen.actions import EffectPending
 from zippergen.control import (
     decode_control,
     encode_control,
@@ -149,6 +150,11 @@ class RoleRunner:
 
         self.env, self.residual = self._load_or_seed(env)
         self.channel = DurableChannel(conn, role)
+        # Only retry deadlines are volatile. The unchanged durable control is
+        # the recovery record for a parked effect. Keys distinguish sessions
+        # that execute the same projected action template.
+        self._effect_waits: dict[tuple[str | None, int], float] = {}
+        setattr(self.channel, "effect_ready", self._effect_ready)
         self.trace = self._make_trace(trace)
         self._idle_sleep = self._IDLE_SLEEP_INITIAL
         self._status_signature: object = None
@@ -522,8 +528,18 @@ class RoleRunner:
     def _reset_idle_backoff(self) -> None:
         self._idle_sleep = self._IDLE_SLEEP_INITIAL
 
+    def _effect_ready(self, node, session=None) -> bool:
+        return time.monotonic() >= self._effect_waits.get((session, id(node)), 0)
+
     def _sleep_after_idle_step(self) -> None:
-        time.sleep(self._idle_sleep)
+        delay = self._idle_sleep
+        future = [deadline - time.monotonic() for deadline in self._effect_waits.values()]
+        if future:
+            delay = min(delay, max(0.001, min(future)))
+        if self.stop is None:
+            time.sleep(delay)
+        else:
+            self.stop.wait(delay)
         self._idle_sleep = min(
             self._IDLE_SLEEP_MAX, self._idle_sleep * self._IDLE_SLEEP_FACTOR
         )
@@ -540,13 +556,25 @@ class RoleRunner:
                 # Nothing durable happened yet, so drop the transaction before
                 # touching the outside world.
                 self._rollback()
-                status, detail = self._external_status(out)
-                self._publish_status(status, detail)
+                wait_key = (out.session, id(out.node))
+                if wait_key not in self._effect_waits:
+                    status, detail = self._external_status(out)
+                    self._publish_status(status, detail)
                 if out.trace_start is not None:
                     self.trace(out.trace_start)
                 started_at = time.monotonic()
                 try:
                     resolution = self._resolve_external(out)
+                except EffectPending as pending:
+                    if not isinstance(cast(ActStmt, out.node).action, EffectAction):
+                        raise TypeError("Only an @effect may signal EffectPending") from pending
+                    self._effect_waits[wait_key] = time.monotonic() + pending.retry_after
+                    if out.trace_start is not None:
+                        self.trace({**out.trace_start, "type": "act_wait",
+                                    "retry_after": pending.retry_after})
+                    # No output, control advance or completed action event. The
+                    # next scan may run another branch/session of this role.
+                    continue
                 except BaseException as exc:
                     if (
                         out.trace_start is not None
@@ -576,6 +604,7 @@ class RoleRunner:
                             # lifeline.
                             pass
                     raise
+                self._effect_waits.pop(wait_key, None)
                 duration_ms = max(
                     0, round((time.monotonic() - started_at) * 1000)
                 )

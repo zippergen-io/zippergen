@@ -20,7 +20,24 @@ from zippergen.syntax import (
     HumanAction, Lifeline, is_ztype, validate_zvalue,
 )
 
-__all__ = ["llm", "pure", "effect", "assistant", "planner", "human"]
+__all__ = ["llm", "pure", "effect", "assistant", "planner", "human", "EffectPending"]
+
+
+class EffectPending(Exception):
+    """A bounded effect probe has no result yet. Retry without advancing control.
+
+    Supported by the SQLite runner. Raising this must leave the operation safe
+    to retry. It is not a way to retry an uncertain mutation or provider error.
+    The delay is a scheduling hint and is deliberately not persisted: recovery
+    rechecks the external condition. Use ``@effect(visible=False)`` for quiet
+    operational polling rather than recording each probe in inspection history.
+    """
+
+    def __init__(self, *, retry_after: float = 1.0) -> None:
+        if isinstance(retry_after, bool) or not math.isfinite(retry_after) or retry_after <= 0:
+            raise ValueError("EffectPending retry_after must be finite and positive")
+        self.retry_after = float(retry_after)
+        super().__init__("Effect is waiting for external data")
 
 # Type alias for an output spec list/tuple (used by @llm)
 OutputSpec = list[tuple[str, ZType]] | tuple[tuple[str, ZType], ...]

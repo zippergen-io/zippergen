@@ -20,13 +20,50 @@ that participant's local fork. A field without an initialized value stays
 uninitialized. Other fields keep referring to the same participant-local cell.
 This copy is not a snapshot taken at one global instant.
 
+For a child whose entire protocol state should be private, use:
+
+```python
+with spawn(fresh="all"):
+    Mailbox(request) >> Writer(request)
+    Writer: draft = draft_reply(request)
+```
+
+This is shorthand for all participant-qualified fields read or written in the
+body, including receive targets, guard inputs and nested fragments/spawns.
+It expands to the ordinary explicit field list before projection. `zg show`
+and semantic snapshots display that expanded list. Adding a field to the body
+therefore includes it automatically. This does not copy Python globals,
+credentials or external resources. To inherit selected fields while isolating
+everything else, use:
+
+```python
+from zippergen import all_except
+
+with spawn(fresh=all_except(Writer.preferences)):
+    Mailbox(request) >> Writer(request)
+    Writer: draft = draft_reply(request, preferences)
+```
+
+`Writer.preferences` keeps its current cell, shared with sessions inheriting
+that cell. Each read sees that cell's value at the time of the action. A nested
+child inherits its parent's binding, not necessarily the root session's cell.
+Exclusions must name participant-qualified fields used by the child. Unused,
+duplicate or malformed exclusions fail during construction. `all_except()`
+with no exclusions is equivalent to `"all"`. Both forms expand to ordinary
+explicit freshness lists, so they introduce no new runtime semantics.
+
+The explicit tuple remains available. Omitting `fresh` still means inheritance.
+Low-level callable guards without source metadata require an explicit field
+list because the builder cannot infer their reads safely.
+
 `zg validate` warns when a spawned body assigns a field omitted from `fresh`,
 including message receive targets. The warning names the participant and field.
 For example, selecting `Mailbox.draft` does not silence a warning about
 `Writer.draft`. Add fields that belong to one request to `fresh`.
 
-Intentional shared accumulators are allowed and still produce a warning. There
-is no separate sharing annotation or suppression option yet. These checks cover
+Intentional shared accumulators are allowed and still produce a warning,
+including writes to fields excluded with `all_except`. The selector does not
+suppress warnings. These checks cover
 explicit assignments, not reads of changing parent state or mutations hidden
 inside Python actions. A warning-free workflow is not a proof of race freedom.
 
@@ -69,6 +106,11 @@ Ordinary external effects, model calls and terminal human prompts remain
 synchronous at their participant. They can delay its other sessions until they
 return. Spawn does not change the retry or idempotency guarantees of connectors.
 
+A short SQLite-backed polling effect may raise `EffectPending(retry_after=1)`
+when no data is ready. Its continuation stays at the same action while other
+sessions and parallel branches can run. See [polling effects](polling-effects.md).
+This does not make arbitrary long-running calls asynchronous.
+
 The existing finite-run supervisor waits until all participants have exhausted
 all their sessions before collecting workflow outputs. That is the lifetime of
 the run, not a join inserted into the parent's program. A service or durable
@@ -81,6 +123,15 @@ control positions, copied cells, binding references, fork counters, scheduler
 cursor and pending human requests. Child creation and parent advancement
 commit together. A crash before commit retries the same fork. A crash after
 commit resumes its existing child.
+
+External intake acknowledgement is a separate boundary. Keep a claim
+redeliverable until its identity and the intake participant's fork are durable.
+Then acknowledge intake in the parent before claiming another item. A crash
+before acknowledgement can resume the saved child, and a crash after it must
+be safe to repeat the acknowledgement. Do not acknowledge inside an effect
+whose returned claim has not yet committed. The external service must support
+the required redelivery and idempotent acknowledgement. This is not an atomic
+transaction across a mailbox and the workflow store.
 
 No database schema migration is needed. Workflows without spawn retain their
 existing projection, fingerprints and control encoding. Spawn workflows use

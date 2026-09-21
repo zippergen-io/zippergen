@@ -95,6 +95,10 @@ class ScopedChannel:
     def get(self, sender, receiver, channel, **kwargs):
         return self.channel.get(sender, receiver, self.route(channel), **kwargs)
 
+    def effect_ready(self, node):
+        ready = getattr(self.channel, "effect_ready", None)
+        return True if ready is None else ready(node, self.session.name)
+
     def fork(self, stmt):
         parent = self.session
         visit = parent.visits.get(stmt.site, 0) + 1

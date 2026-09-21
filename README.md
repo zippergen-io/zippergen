@@ -18,6 +18,10 @@ workflow as a service on your machine or server. You use the same CLI to
 configure models and services, check the project, deploy it, and see what is
 happening.
 
+The reusable Lean development underlying ZipperGen's formal guarantees lives
+in [`formal/lean`](formal/lean). Paper-specific proof artifacts are published
+separately in `zippergen-lean`.
+
 ---
 
 ## From code to a running service
