@@ -29,7 +29,7 @@ namespace ZipperGenSpawn
 inductive CellOp (Field Value : Type) where
   | expect (field : Field) (value : Value)
   | write (field : Field) (value : Value)
-deriving Repr
+  | check (predicate : (Field -> Option Value) -> Bool)
 
 /-- Participant-owned cells, indexed by their allocation session. -/
 abbrev CellStore (Lifeline Field Value : Type) :=
@@ -105,6 +105,11 @@ def applyCellOp [DecidableEq Lifeline] [DecidableEq Field] [DecidableEq Value]
   | .write field value, store =>
       some <| setCell store A (cellAllocation fresh A session field)
         field (some value)
+  | .check predicate, store =>
+      if predicate (fun field => readCell fresh store A session field) then
+        some store
+      else
+        none
 
 def applyCellOps [DecidableEq Lifeline] [DecidableEq Field] [DecidableEq Value]
     (fresh : FreshFields Lifeline Field)
@@ -200,6 +205,41 @@ abbrev EventContract
   ∀ A : Lifeline,
     AlphabetOf (C := Condition) (F := Action) (Payload := Payload) A ->
       List (CellOp Field Value)
+
+/-- Pure evaluation of a source condition from the deciding participant's
+    local view.  Cell resolution remains session-aware: inherited fields and
+    child-fresh fields may therefore produce different decisions. -/
+abbrev GuardEvaluator
+    (Lifeline Condition Field Value : Type) :=
+  Lifeline -> Condition -> (Field -> Option Value) -> Bool
+
+/-- Recover the Boolean already recorded by an owner-side choice letter.
+    Generated control sends and receives are intentionally ignored: only the
+    participant that owns the source guard evaluates it. -/
+def recordedDecision
+    {Lifeline Condition Action Payload : Type} {A : Lifeline}
+    (letter : AlphabetOf (C := Condition) (F := Action)
+      (Payload := Payload) A) : Option (Condition × Bool) :=
+  match letter.1 with
+  | .ifTrueLetter condition _ => some (condition, true)
+  | .ifFalseLetter condition _ => some (condition, false)
+  | .whileTrueLetter condition _ => some (condition, true)
+  | .whileFalseLetter condition _ => some (condition, false)
+  | _ => none
+
+/-- Add data-aware guards to an ordinary event contract.  The global MSC
+    already records the chosen truth value; this wrapper merely checks that the
+    value equals evaluation of the guard in the owner's current local cells. -/
+def guardedEventContract
+    (guard : GuardEvaluator Lifeline Condition Field Value)
+    (contract : EventContract Lifeline Condition Action Payload Field Value) :
+    EventContract Lifeline Condition Action Payload Field Value :=
+  fun A letter =>
+    match recordedDecision letter with
+    | none => contract A letter
+    | some (condition, decision) =>
+        .check (fun cells => guard A condition cells == decision) ::
+          contract A letter
 
 def applyDataLetter [DecidableEq Lifeline] [DecidableEq Field]
     [DecidableEq Value]

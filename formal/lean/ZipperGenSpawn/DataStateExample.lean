@@ -53,6 +53,32 @@ def initial : CellStore Role Field Nat
   | .writer, .root, .draft => some 42
   | _, _, _ => none
 
+def noContract : EventContract Role Bool String Nat Field Nat :=
+  fun _ _ => []
+
+def draftIs42 : GuardEvaluator Role Bool Field Nat :=
+  fun _ _ cells => decide (cells .draft = some 42)
+
+def trueChoice : AlphabetOf (C := Bool) (F := String) (Payload := Nat)
+    Role.writer :=
+  AlphabetOf.mkIfTrue Role.writer true
+
+def falseChoice : AlphabetOf (C := Bool) (F := String) (Payload := Nat)
+    Role.writer :=
+  AlphabetOf.mkIfFalse Role.writer true
+
+example : recordedDecision trueChoice = some (true, true) := rfl
+
+example :
+    applyDataLetter fresh (guardedEventContract draftIs42 noContract)
+      .writer (.event .root trueChoice) initial = some initial := by
+  rfl
+
+example :
+    applyDataLetter fresh (guardedEventContract draftIs42 noContract)
+      .writer (.event .root falseChoice) initial = none := by
+  rfl
+
 example :
     readCell fresh
         (copyFreshFields fresh initial .writer .root child [.draft])
