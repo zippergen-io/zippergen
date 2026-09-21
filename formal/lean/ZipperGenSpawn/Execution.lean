@@ -17,6 +17,19 @@ variable {Session L C F Payload : Type}
 variable [DecidableEq Session] [DecidableEq L] [Fintype L]
 variable [PayloadCompatiblePred Payload] [ControlPayloadSpec Payload]
 
+/-- Discoverable prefix-completion API for the rich, data-bearing projection.
+    This is the deadlock-freedom theorem from the MSC development, restated in
+    the exact form needed by spawned-session certificates. -/
+theorem projected_data_prefixCompletable
+    (program : Prog L C F Payload)
+    (hWellTyped : WellTypedProgram program) :
+    ∀ partialWord,
+      distPrefixSemantics (projectDist program) partialWord ->
+        ∃ complete,
+          distSemantics (projectDist program) complete ∧
+          IsPrefixTuple partialWord complete :=
+  projectDist_deadlockFree program hWellTyped
+
 /-- A letter on a physical participant lifeline. Fork markers are local
     activation events; ordinary endpoint letters carry their session tag. -/
 inductive SpawnLetter (Session : Type) {L C F Payload : Type} (A : L) where

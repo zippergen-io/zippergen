@@ -20,7 +20,9 @@ Current checked modules:
   global properties to unfinished distributed executions.
 - `ZipperGenSpawn.Execution` defines session-tagged physical lifelines with
   local fork markers and lifts prefix realization and safety pointwise to every
-  active spawned session.
+  active spawned session.  Its `projected_data_prefixCompletable` theorem
+  exposes the rich projection's generic finite-prefix completion result directly
+  to application certificates.
 - `ZipperGenSpawn.SourceSyntax`, `LocalProgram`, and `Projection` define the
   extended choreography, local fork templates, flat branch scopes, structural
   projection, and selective freshness metadata.
@@ -83,6 +85,44 @@ Current checked modules:
   satisfies the full `ProjectedSpawnPrefixSemantics` for all active root and
   child sessions.  It also exposes the resulting prefix-closed property
   transfer as `reachable_active_sessions_prefix_property`.
+- `ZipperGenSpawn.DataSyntax` conservatively annotates the control-only spawn
+  syntax with the original MSC calculus's action names and message payloads.
+  Annotation erasure produces the program used by the operational theorem;
+  each root or child session also exposes its rich MSC program, with detached
+  child bodies omitted from their parent's behavior.
+- `ZipperGenSpawn.DataState` supplies the data-bearing proof interface used by
+  application certificates.  It retains the existing rich action labels and
+  message payloads, resolves participant-local cells through canonical session
+  ancestry, copies selected fresh cells at local forks, and interprets all
+  other cells as inherited participant state.  Erasure recovers the established
+  spawned prefix semantics, so `stateful_spawned_prefix_property` transfers
+  prefix-closed properties proved on the global choreography without repeating
+  the MSC/projection proof.
+  `data_source_prefix_property` is the application-facing theorem: it ties the
+  rich per-session programs and freshness declarations to one annotated global
+  source tree and transfers a prefix-closed property to every active finite
+  distributed session.
+  Its small `DataReplayStep` machine appends an observation only when the
+  participant-local action contract succeeds;
+  `dataReplayReachable_cellConsistent` proves that every reachable replay has
+  exactly the state obtained from its physical history.  This makes action
+  contracts executable proof assumptions rather than unchecked prose.
+  `dataReplayReachable_invariant` is the companion induction rule for
+  properties of shared and session-local participant memory.
+  `ReachableDataSourceExecution` bundles that replay with the rich projected
+  spawn execution and declared-fork evidence, and
+  `reachable_data_source_prefix_property` is the resulting end-to-end proof
+  rule for application certificates.
+
+The data bridge currently covers session bodies without an intra-session
+`parallel`: `DataProg.sessionCore` returns `none` at that constructor rather
+than silently changing its meaning, and `RichCoreDefined` is required by the
+source-level execution predicate.  Spawned sessions still run concurrently,
+and the control-level operational development proves the full interaction of
+`parallel` and `spawn`.  A future rich-data parallel bridge should reuse the
+checked `ZipperGenParallel` semantics; until then, application certificates
+that need data-bearing events inside one parallel region must model that region
+separately instead of relying on `programForSessionTotal`'s default.
 
 No module in `ZipperGenSpawn` or `ZipperGenParallel` uses `sorry` or declares
 an axiom.  The endpoint machine now has a complete execution-side spawn
