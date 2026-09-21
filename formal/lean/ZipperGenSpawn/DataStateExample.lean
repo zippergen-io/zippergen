@@ -57,7 +57,7 @@ def noContract : EventContract Role Bool String Nat Field Nat :=
   fun _ _ => []
 
 def draftIs42 : GuardEvaluator Role Bool Field Nat :=
-  fun _ _ cells => decide (cells .draft = some 42)
+  fun _ _ cells => some (decide (cells .draft = some 42))
 
 def trueChoice : AlphabetOf (C := Bool) (F := String) (Payload := Nat)
     Role.writer :=

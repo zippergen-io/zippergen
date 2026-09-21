@@ -112,8 +112,8 @@ Current checked modules:
   Owner-side `if` and `while` letters already contain the condition and chosen
   Boolean. `guardedEventContract` attaches a `GuardEvaluator` to those letters,
   rejecting a replay when the recorded decision disagrees with the deciding
-  participant's session-aware local cells; generated control traffic is left
-  unchanged.
+  participant's session-aware local cells. Returning `none` leaves a genuinely
+  external choice unconstrained; generated control traffic is left unchanged.
   `ReachableDataSourceExecution` bundles that replay with the rich projected
   spawn execution and declared-fork evidence, and
   `reachable_data_source_prefix_property` is the resulting end-to-end proof

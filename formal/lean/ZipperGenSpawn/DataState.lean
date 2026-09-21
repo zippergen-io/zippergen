@@ -211,7 +211,7 @@ abbrev EventContract
     child-fresh fields may therefore produce different decisions. -/
 abbrev GuardEvaluator
     (Lifeline Condition Field Value : Type) :=
-  Lifeline -> Condition -> (Field -> Option Value) -> Bool
+  Lifeline -> Condition -> (Field -> Option Value) -> Option Bool
 
 /-- Recover the Boolean already recorded by an owner-side choice letter.
     Generated control sends and receives are intentionally ignored: only the
@@ -238,7 +238,10 @@ def guardedEventContract
     match recordedDecision letter with
     | none => contract A letter
     | some (condition, decision) =>
-        .check (fun cells => guard A condition cells == decision) ::
+        .check (fun cells =>
+          match guard A condition cells with
+          | none => true
+          | some expected => expected == decision) ::
           contract A letter
 
 def applyDataLetter [DecidableEq Lifeline] [DecidableEq Field]
