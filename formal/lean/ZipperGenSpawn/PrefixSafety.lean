@@ -21,6 +21,14 @@ variable [PayloadCompatiblePred Payload] [ControlPayloadSpec Payload]
 def TuplePrefixClosed (property : WordTuple L C F Payload → Prop) : Prop :=
   ∀ M M', IsPrefixTuple M M' → property M' → property M
 
+/-- A property may rely on causal closure of the observed cut.  Such a
+    property need only be preserved by componentwise prefixes that are
+    themselves valid MSCs.  This is strictly weaker than `TuplePrefixClosed`:
+    an arbitrary tuple prefix may retain a receive while omitting its matching
+    send, whereas an execution prefix cannot. -/
+def MSCTuplePrefixClosed (property : WordTuple L C F Payload → Prop) : Prop :=
+  ∀ M M', IsPrefixTuple M M' → IsMSC M → property M' → property M
+
 /-- Erasing generated control traffic preserves the componentwise prefix
     relation. -/
 theorem eraseTuple_prefix {M M' : WordTuple L C F Payload}
@@ -67,6 +75,25 @@ theorem projected_prefix_property
   rcases projected_prefix_realization prog hWellTyped hCtrl Mhat hMhat with
     ⟨M, hM, hPrefix⟩
   exact hPrefixClosed _ _ hPrefix (hGlobal M hM)
+
+/-- A causally prefix-closed global property holds on every finite projected
+    execution.  Unlike `projected_prefix_property`, the closure proof may use
+    the fact that the observed tuple is an MSC. -/
+theorem projected_msc_prefix_property
+    (prog : Prog L C F Payload)
+    (hWellTyped : WellTypedProgram prog)
+    (hCtrl : ControlDistinguishableProgram prog)
+    (property : WordTuple L C F Payload → Prop)
+    (hPrefixClosed : MSCTuplePrefixClosed property)
+    (hGlobal : ∀ M, ⟦prog⟧ M → property M) :
+    ∀ Mhat,
+      distPrefixSemantics (projectDist prog) Mhat →
+      property (eraseTuple Mhat) := by
+  intro Mhat hMhat
+  rcases projected_prefix_realization prog hWellTyped hCtrl Mhat hMhat with
+    ⟨M, hM, hPrefix⟩
+  exact hPrefixClosed _ _ hPrefix (IsMSC_erase Mhat hMhat.2)
+    (hGlobal M hM)
 
 end PrefixSafety
 

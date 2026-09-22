@@ -595,6 +595,33 @@ theorem stateful_spawned_prefix_property
     hWellTyped hControl hPrefixClosed hGlobal (eraseDataTuple physical)
       hPhysical.1
 
+/-- The data-bearing spawn layer also preserves properties closed under valid
+    MSC cuts. This is the bridge for causal safety statements relating
+    several participants in one active session. -/
+theorem stateful_spawned_msc_prefix_property
+    [DecidableEq Lifeline] [Fintype Lifeline]
+    [PayloadCompatiblePred Payload] [ControlPayloadSpec Payload]
+    [DecidableEq Field] [DecidableEq Value]
+    (program : SessionName -> _root_.Prog Lifeline Condition Action Payload)
+    (freshAt : FreshFields Lifeline Field)
+    (contract : EventContract Lifeline Condition Action Payload Field Value)
+    (initial : CellStore Lifeline Field Value)
+    (property : SessionName -> WordTuple Lifeline Condition Action Payload -> Prop)
+    (hWellTyped : ∀ session, WellTypedProgram (program session))
+    (hControl : ∀ session, ControlDistinguishableProgram (program session))
+    (hPrefixClosed : ∀ session, MSCTuplePrefixClosed (property session))
+    (hGlobal : ∀ session chart, ⟦program session⟧ chart -> property session chart)
+    (physical : DataSpawnTuple Lifeline Condition Action Payload Field)
+    (hPhysical :
+      StatefulSpawnPrefixSemantics program freshAt contract initial physical) :
+    ∀ session,
+      SessionActive .root session (eraseDataTuple physical) ->
+        property session
+          (eraseTuple (sessionTuple session (eraseDataTuple physical))) := by
+  exact spawned_msc_prefix_property .root SessionName.parent program property
+    hWellTyped hControl hPrefixClosed hGlobal (eraseDataTuple physical)
+      hPhysical.1
+
 /-- High-level semantics for one data-bearing spawn choreography.  It ties the
     total rich session family and participant freshness map back to the single
     annotated source tree and rejects forks at undeclared sites. -/
@@ -674,6 +701,34 @@ theorem data_source_prefix_property
     source.freshForSession contract initial property hWellTyped hControl
       hPrefixClosed hGlobal physical hPhysical.2.1
 
+/-- Causal-cut application API for an annotated data choreography. It differs
+    from `data_source_prefix_property` only in allowing the closure proof to
+    use validity of the observed MSC cut. -/
+theorem data_source_msc_prefix_property
+    [DecidableEq Lifeline] [Fintype Lifeline]
+    [PayloadCompatiblePred Payload] [ControlPayloadSpec Payload]
+    [DecidableEq Field] [DecidableEq Value]
+    (source : DataProg Lifeline Field Condition Action Payload)
+    (contract : EventContract Lifeline Condition Action Payload Field Value)
+    (initial : CellStore Lifeline Field Value)
+    (property : SessionName -> WordTuple Lifeline Condition Action Payload -> Prop)
+    (hWellTyped : ∀ session,
+      WellTypedProgram (source.programForSessionTotal session))
+    (hControl : ∀ session,
+      ControlDistinguishableProgram (source.programForSessionTotal session))
+    (hPrefixClosed : ∀ session, MSCTuplePrefixClosed (property session))
+    (hGlobal : ∀ session chart,
+      ⟦source.programForSessionTotal session⟧ chart -> property session chart)
+    (physical : DataSpawnTuple Lifeline Condition Action Payload Field)
+    (hPhysical : DataSourcePrefixSemantics source contract initial physical) :
+    ∀ session,
+      SessionActive .root session (eraseDataTuple physical) ->
+        property session
+          (eraseTuple (sessionTuple session (eraseDataTuple physical))) := by
+  exact stateful_spawned_msc_prefix_property source.programForSessionTotal
+    source.freshForSession contract initial property hWellTyped hControl
+      hPrefixClosed hGlobal physical hPhysical.2.1
+
 /-- End-to-end application theorem for a concrete replay-reachable execution.
     The application supplies only the ordinary global proof and the two
     execution witnesses in `ReachableDataSourceExecution`; cell consistency is
@@ -704,6 +759,37 @@ theorem reachable_data_source_prefix_property
             (sessionTuple session (eraseDataTuple configuration.physical))) := by
   exact data_source_prefix_property source contract initial property hWellTyped
     hControl hPrefixClosed hGlobal configuration.physical
+      (reachableDataSourceExecution_semantics source contract initial
+        configuration hexecution)
+
+/-- End-to-end causal-cut theorem for concrete replay-reachable, spawned,
+    data-aware executions. -/
+theorem reachable_data_source_msc_prefix_property
+    [DecidableEq Lifeline] [Fintype Lifeline]
+    [PayloadCompatiblePred Payload] [ControlPayloadSpec Payload]
+    [DecidableEq Field] [DecidableEq Value]
+    (source : DataProg Lifeline Field Condition Action Payload)
+    (contract : EventContract Lifeline Condition Action Payload Field Value)
+    (initial : CellStore Lifeline Field Value)
+    (property : SessionName -> WordTuple Lifeline Condition Action Payload -> Prop)
+    (hWellTyped : ∀ session,
+      WellTypedProgram (source.programForSessionTotal session))
+    (hControl : ∀ session,
+      ControlDistinguishableProgram (source.programForSessionTotal session))
+    (hPrefixClosed : ∀ session, MSCTuplePrefixClosed (property session))
+    (hGlobal : ∀ session chart,
+      ⟦source.programForSessionTotal session⟧ chart -> property session chart)
+    (configuration : DataReplayConfiguration
+      Lifeline Condition Action Payload Field Value)
+    (hexecution :
+      ReachableDataSourceExecution source contract initial configuration) :
+    ∀ session,
+      SessionActive .root session (eraseDataTuple configuration.physical) ->
+        property session
+          (eraseTuple
+            (sessionTuple session (eraseDataTuple configuration.physical))) := by
+  exact data_source_msc_prefix_property source contract initial property
+    hWellTyped hControl hPrefixClosed hGlobal configuration.physical
       (reachableDataSourceExecution_semantics source contract initial
         configuration hexecution)
 

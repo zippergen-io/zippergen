@@ -157,6 +157,32 @@ theorem spawned_prefix_property
   rcases hGlobalPrefixes.2 s hActive with ⟨M, hM, hPrefix⟩
   exact hPrefixClosed s _ _ hPrefix (hGlobal s M hM)
 
+/-- Causally prefix-closed global properties transfer independently to every
+    active session. The closure argument may use that the observed
+    participant cut is an MSC, so it can relate events across lifelines
+    without accepting causally impossible tuple prefixes. -/
+theorem spawned_msc_prefix_property
+    (root : Session)
+    (parentOf : Session → Option Session)
+    (program : Session → Prog L C F Payload)
+    (property : Session → WordTuple L C F Payload → Prop)
+    (hWellTyped : ∀ s, WellTypedProgram (program s))
+    (hCtrl : ∀ s, ControlDistinguishableProgram (program s))
+    (hPrefixClosed : ∀ s, MSCTuplePrefixClosed (property s))
+    (hGlobal : ∀ s M, ⟦program s⟧ M → property s M)
+    (physical : SpawnTuple Session L C F Payload)
+    (hPhysical : SpawnPrefixSemantics root parentOf program physical) :
+    ∀ s, SessionActive root s physical →
+      property s (eraseTuple (sessionTuple s physical)) := by
+  have hGlobalPrefixes := spawned_prefix_realization root parentOf program
+    hWellTyped hCtrl physical hPhysical
+  intro s hActive
+  rcases hGlobalPrefixes.2 s hActive with ⟨M, hM, hPrefix⟩
+  have hSession := hPhysical.2 s hActive
+  exact hPrefixClosed s _ _ hPrefix
+    (IsMSC_erase (sessionTuple s physical) hSession.2)
+    (hGlobal s M hM)
+
 end Execution
 
 end ZipperGenSpawn
