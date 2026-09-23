@@ -338,6 +338,8 @@ class SessionState:
         if not isinstance(descriptor, dict) or descriptor.get("template") != template:
             raise ValueError("Missing or incompatible bound-spawn template")
         child = descriptor.get("child")
+        if not isinstance(child, str):
+            raise ValueError("Bound-spawn descriptor has an invalid child session")
         if expected_child is not None and child != expected_child:
             raise ValueError(f"Unexpected child visit: {child!r}; expected {expected_child!r}")
         binding = descriptor.get("bindings")

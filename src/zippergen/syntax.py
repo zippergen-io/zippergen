@@ -665,11 +665,11 @@ class SpawnStmt:
         else:
             if not isinstance(self.owner, Lifeline):
                 raise TypeError("spawn at must name a Lifeline")
-            if self.retain is None:
-                object.__setattr__(self, "retain", ())
-            if len(set(self.retain)) != len(self.retain) or not set(self.retain) <= roles:
+            retain = self.retain if self.retain is not None else ()
+            object.__setattr__(self, "retain", retain)
+            if len(set(retain)) != len(retain) or not set(retain) <= roles:
                 raise ValueError("spawn retain must contain distinct child roles")
-            if any(field.lifeline not in self.retain for field in self.fresh):
+            if any(field.lifeline not in retain for field in self.fresh):
                 raise ValueError("spawn fresh may select retained roles only")
 
 

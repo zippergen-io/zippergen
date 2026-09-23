@@ -8,13 +8,20 @@ import time
 import pytest
 
 from zippergen import Lifeline, Var, fragment, pure, run, run_sqlite, spawn, workflow
-from zippergen.sessions import fresh_endpoint
+from zippergen.sessions import SessionState, fresh_endpoint
 from zippergen.store import DurableChannel, load_spawn_instance, open_store
 
 
 A, B = Lifeline("A"), Lifeline("B")
 item = Var("item", int)
 answer = Var("answer", int)
+
+
+@pytest.mark.parametrize("child_fields", [{}, {"child": None}, {"child": 1}])
+def test_descriptor_rejects_missing_or_nonstring_child(child_fields):
+    state = SessionState(sessions={})
+    with pytest.raises(ValueError, match="invalid child session"):
+        state.validate_descriptor({"template": "review", **child_fields}, "review", "B")
 
 
 @pure

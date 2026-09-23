@@ -306,7 +306,9 @@ def program_fingerprint(local_programs: Mapping[str, object], *, templates=None)
     compatibility identity. The hash is stable across processes.
     """
 
-    shape = {role: _shape(program) for role, program in sorted(local_programs.items())}
+    shape: dict[str, object] = {
+        role: _shape(program) for role, program in sorted(local_programs.items())
+    }
     if templates:
         shape["__spawn_templates__"] = {
             f"{site}:{role}": {
