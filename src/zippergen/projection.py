@@ -6,11 +6,12 @@ returns the LocalStmt A must execute. See paper Tables for the projection rules.
 from __future__ import annotations
 
 from typing import cast
-from dataclasses import replace
+from dataclasses import replace, dataclass
 
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt, SpawnStmt, ForkStmt,
+    BoundSelectStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
     SendStmt, RecvStmt, SelfAssignStmt, IfRecvStmt, WhileRecvStmt,
     ParallelLocalStmt,
     Lifeline, LocalStmt, AnyStmt, Var, VarExpr, LitExpr,
@@ -20,6 +21,18 @@ from zippergen.syntax import (
 )
 
 __all__ = ["project"]
+
+
+@dataclass(frozen=True)
+class SpawnTemplate:
+    """Statically projected role code installed by a child creation site."""
+
+    program: LocalStmt
+    template: str
+    interface: tuple[Lifeline, ...]
+    retain: tuple[Lifeline, ...]
+    recruited: bool
+    fresh: tuple[str, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -138,16 +151,42 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
         case SeqStmt(first=p1, second=p2):
             return cast(LocalStmt, seq(_project(p1, A, context, channel, site + ".0"), _project(p2, A, context, channel, site + ".1")))
 
-        case SpawnStmt(body=body, fresh=fresh):
-            if A not in context.participants(body):
+        case SpawnStmt(body=body, fresh=fresh, bindings=bindings, owner=owner, retain=retain):
+            interface = tuple(sorted(context.participants(body), key=lambda role: role.name))
+            if bindings is None and A not in interface:
                 return EmptyStmt()
-            child = _project(body, A, context, "main", site + ".0")
+            if bindings is not None and A != owner and A not in (retain or ()):
+                return EmptyStmt()
             names = tuple(sorted(field.name for field in fresh if field.lifeline == A))
             # Guard-only fields and declared but currently unused scratch cells
             # are valid selections too. They need not occur in an action.
             if any(name not in context._occupied for name in names):
                 raise ValueError(f"spawn fresh selects an undeclared field at {A.name}")
-            return ForkStmt(A, site, child, names)
+            if bindings is None:
+                child = _project(body, A, context, "main", site + ".0")
+                return ForkStmt(A, site, child, names)
+            retained = tuple(sorted(retain or (), key=lambda role: role.name))
+            template = f"bound-v1:{site}:{canonical_construct_key(stmt)}"
+            if A == owner:
+                instructions: list[LocalStmt] = [
+                    BoundSelectStmt(owner, site, bindings, interface, retained, template),
+                ]
+                for role in sorted((set(interface) - ({owner} if owner in retained else set())),
+                                   key=lambda role: role.name):
+                    kind = "desc" if role in retained else "invite"
+                    instructions.append(BoundSendStmt(owner, site, role, kind))
+                if owner in retained:
+                    child = _project(body, A, _Context(context._occupied, True),
+                                     "main", site + ".0")
+                    instructions.append(BoundForkStmt(A, site, child, names, template,
+                                                      interface, retained))
+                return cast(LocalStmt, seq(*instructions))
+            child = _project(body, A, _Context(context._occupied, True),
+                             "main", site + ".0")
+            return cast(LocalStmt, seq(
+                BoundReceiveStmt(A, site, owner, template),
+                BoundForkStmt(A, site, child, names, template, interface, retained),
+            ))
 
         # parallel { P_i }_i
         case ParallelStmt(branches=branches):
@@ -272,3 +311,52 @@ def project(wf: Workflow, lifeline: Lifeline) -> LocalStmt:
         if guards:
             raise ValueError("Experimental spawn does not yet support CPL guards")
     return local
+
+
+def project_templates(wf: Workflow) -> dict[tuple[str, str], SpawnTemplate]:
+    """Compile every child role once, including roles recruited at nested sites.
+
+    Keys are ``(static_spawn_site, role_name)``. Session instances reuse this
+    code with immutable runtime binding descriptors; no endpoint-specific code
+    is generated when an invitation arrives.
+    """
+
+    occupied = (
+        occurring_variables(wf.body)
+        | {name for name, _type, _lifeline in wf.inputs}
+        | {var.name for var in wf.vars}
+        | {var.name for var, _lifeline in wf.outputs}
+        | {value.name for value in wf.ns.values() if isinstance(value, Var)}
+    )
+    registry: dict[tuple[str, str], SpawnTemplate] = {}
+
+    def walk(node: AnyStmt, site: str) -> None:
+        if isinstance(node, SpawnStmt):
+            interface = tuple(sorted(participation_set(node.body), key=lambda role: role.name))
+            retained = (interface if node.bindings is None else
+                        tuple(sorted(node.retain or (), key=lambda role: role.name)))
+            template = (f"bound-v1:{site}:{canonical_construct_key(node)}" if node.bindings is not None
+                        else f"inherited-v1:{site}:{canonical_construct_key(node)}")
+            for role in interface:
+                program = _project(node.body, role, _Context(frozenset(occupied), True),
+                                   "main", site + ".0")
+                registry[(site, role.name)] = SpawnTemplate(
+                    program, template, interface, retained, role not in retained,
+                    tuple(sorted(field.name for field in node.fresh if field.lifeline == role)),
+                )
+            walk(node.body, site + ".0")
+        elif isinstance(node, SeqStmt):
+            walk(node.first, site + ".0")
+            walk(node.second, site + ".1")
+        elif isinstance(node, IfStmt):
+            walk(node.branch_true, site + ".0")
+            walk(node.branch_false, site + ".1")
+        elif isinstance(node, WhileStmt):
+            walk(node.body, site + ".0")
+            walk(node.exit_body, site + ".1")
+        elif isinstance(node, ParallelStmt):
+            for index, branch in enumerate(node.branches):
+                walk(branch, site + f".{index}")
+
+    walk(wf.body, "0")
+    return registry

@@ -92,11 +92,16 @@ def encode_control(root: LocalStmt, residual: Residual | SessionState) -> dict:
     return encode(residual)
 
 
-def decode_control(root: LocalStmt, data: dict) -> Residual | SessionState:
+def decode_control(root: LocalStmt, data: dict, *, templates=None, endpoint=None,
+                   endpoints=None, root_bindings=None, keep_alive=False) -> Residual | SessionState:
     """Rebuild a residual from encoded control state and a projected program."""
 
     if data.get("k") == "sessions":
-        return SessionState.decode(root, data)
+        return SessionState.decode(
+            root, data, templates=templates, endpoint=endpoint,
+            endpoints=endpoints, root_bindings=root_bindings,
+            keep_alive=keep_alive,
+        )
 
     def decode(node: object) -> Residual:
         if not isinstance(node, dict):
@@ -219,6 +224,12 @@ def _shape(node) -> list:
         "branch_indices",
         "site",
         "fresh",
+        "template",
+        "interface",
+        "retain",
+        "recipient",
+        "kind",
+        "role",
     ):
         value = getattr(node, name, None)
         if value is not None:
@@ -250,7 +261,8 @@ def _shape(node) -> list:
     for name in ("payload", "inputs", "bindings"):
         value = getattr(node, name, None)
         if value:
-            fields.append([name, [_expression_shape(item) for item in value]])
+            exprs = value if isinstance(value, tuple) else (value,)
+            fields.append([name, [_expression_shape(item) for item in exprs]])
     outputs = getattr(node, "outputs", None)
     if outputs:
         fields.append(["outputs", [_variable_shape(item) for item in outputs]])
@@ -284,7 +296,7 @@ def _plain(value):
     return str(value)
 
 
-def program_fingerprint(local_programs: Mapping[str, object]) -> str:
+def program_fingerprint(local_programs: Mapping[str, object], *, templates=None) -> str:
     """Identify the projected code durable state may be resumed against.
 
     The stored environment and control paths must mean the same thing to the
@@ -294,8 +306,18 @@ def program_fingerprint(local_programs: Mapping[str, object]) -> str:
     compatibility identity. The hash is stable across processes.
     """
 
-    payload = json.dumps(
-        {role: _shape(program) for role, program in sorted(local_programs.items())},
-        sort_keys=True,
-    )
+    shape = {role: _shape(program) for role, program in sorted(local_programs.items())}
+    if templates:
+        shape["__spawn_templates__"] = {
+            f"{site}:{role}": {
+                "template": spec.template,
+                "program": _shape(spec.program),
+                "interface": [item.name for item in spec.interface],
+                "retain": [item.name for item in spec.retain],
+                "recruited": spec.recruited,
+                "fresh": list(spec.fresh),
+            }
+            for (site, role), spec in sorted(templates.items())
+        }
+    payload = json.dumps(shape, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:32]

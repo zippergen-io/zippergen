@@ -22,7 +22,7 @@ from zippergen.syntax import (
     ParallelStmt, SpawnStmt, Field,
     LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Workflow,
-    seq, is_json_value, is_ztype,
+    seq, is_json_value, is_ztype, participation_set,
     occurring_variable_declarations,
 )
 
@@ -226,6 +226,18 @@ class _AllFreshSpawn(SpawnStmt):
     excluded: tuple[Field, ...] = ()
 
 
+@dataclass(frozen=True)
+class _OwnedBinding:
+    value: object
+    owner: Lifeline
+
+
+def _owned_binding(value: object, owner: Lifeline) -> _OwnedBinding:
+    if not isinstance(owner, Lifeline):
+        raise TypeError("spawn bindings owner must be a Lifeline")
+    return _OwnedBinding(value, owner)
+
+
 def _expand_all_fresh(stmt, known_variables):
     from zippergen.availability import _guard_variables
 
@@ -249,6 +261,12 @@ def _expand_all_fresh(stmt, known_variables):
                          for name in _guard_variables(node.condition, known_variables))
         if isinstance(node, SpawnStmt):
             found.update(node.fresh)
+            if isinstance(node.bindings, VarExpr):
+                found.add(Field(node.owner, node.bindings.var.name))
+            retained = (frozenset(node.retain or ()) if node.bindings is not None
+                        else participation_set(node.body))
+            found.update(field for field in fields(node.body) if field.lifeline in retained)
+            return found
         for child in children(node):
             found.update(fields(child))
         return found
@@ -280,11 +298,18 @@ def _expand_all_fresh(stmt, known_variables):
             if isinstance(node, _AllFreshSpawn):
                 used = fields(body)
                 excluded = set(node.excluded)
+                retained = (frozenset(node.retain or ()) if node.bindings is not None
+                            else participation_set(body))
+                if any(field.lifeline not in retained for field in excluded):
+                    raise ValueError("all_except cannot inherit a recruited role's field")
                 missing = excluded - used
                 if missing:
                     names = ", ".join(sorted(f"{f.lifeline.name}.{f.name}" for f in missing))
                     raise ValueError(f"all_except fields not used by the spawned body: {names}")
-                return SpawnStmt(body, tuple(sorted(used - excluded, key=lambda f: (f.lifeline.name, f.name))))
+                selected = (used - excluded)
+                selected = (field for field in selected if field.lifeline in retained)
+                return SpawnStmt(body, tuple(sorted(selected, key=lambda f: (f.lifeline.name, f.name))),
+                                 node.bindings, node.owner, node.retain)
             return replace(node, body=body)
         return node
 
@@ -292,7 +317,9 @@ def _expand_all_fresh(stmt, known_variables):
 
 
 def spawn(body: Callable | None = None, *,
-          fresh: tuple[Field, ...] | Literal["all"] | _AllExcept = ()):
+          fresh: tuple[Field, ...] | Literal["all"] | _AllExcept = (),
+          bindings: _OwnedBinding | None = None,
+          retain: tuple[Lifeline, ...] | None = None):
     """Experimental detached session. Use ``with spawn(fresh=(A.x,))``.
 
     A zero-argument fragment may also be passed as ``spawn(fragment, fresh=...)``.
@@ -305,14 +332,22 @@ def spawn(body: Callable | None = None, *,
         raise TypeError("spawn must be used inside a @workflow with block or given a fragment")
     if not callable(body) or isinstance(body, Workflow):
         raise TypeError("spawn body must be a zero-argument fragment, or use a with block")
+    if bindings is not None and not isinstance(bindings, _OwnedBinding):
+        raise TypeError("spawn bindings must be written as value @ Owner")
+    binding_expr = _to_expr(bindings.value) if bindings is not None else None
+    if binding_expr is not None and not isinstance(binding_expr, (VarExpr, LitExpr)):
+        raise TypeError("spawn bindings must be a workflow value or Json literal")
+    owner = bindings.owner if bindings is not None else None
     if isinstance(fresh, _AllExcept):
-        _record(_AllFreshSpawn(_collect(body), excluded=fresh.excluded))
+        _record(_AllFreshSpawn(_collect(body), bindings=binding_expr, owner=owner,
+                               retain=retain, excluded=fresh.excluded))
     elif isinstance(fresh, str):
         if fresh != "all":
             raise ValueError('spawn fresh must be "all", all_except(...), or a tuple of participant fields')
-        _record(_AllFreshSpawn(_collect(body)))
+        _record(_AllFreshSpawn(_collect(body), bindings=binding_expr, owner=owner,
+                               retain=retain))
     else:
-        _record(SpawnStmt(_collect(body), tuple(fresh)))
+        _record(SpawnStmt(_collect(body), tuple(fresh), binding_expr, owner, retain))
 
 
 def if_(
@@ -603,6 +638,14 @@ class _ProcTransformer(ast.NodeTransformer):
                         if isinstance(field, ast.Attribute) else field
                         for field in keyword.value.elts
                     ]
+                if keyword.arg == "bindings":
+                    binding = keyword.value
+                    if not (isinstance(binding, ast.BinOp) and isinstance(binding.op, ast.MatMult)):
+                        raise SyntaxError("spawn bindings must be written as value @ Owner")
+                    keyword.value = ast.Call(
+                        func=ast.Name(id="__zg_binding__", ctx=ast.Load()),
+                        args=[binding.left, binding.right], keywords=[],
+                    )
         self.generic_visit(node)
         return node
 
@@ -623,8 +666,8 @@ class _ProcTransformer(ast.NodeTransformer):
         if (isinstance(lifeline_ast, ast.Call)
                 and isinstance(lifeline_ast.func, ast.Name)
                 and lifeline_ast.func.id == "spawn"):
-            if lifeline_ast.args or any(k.arg != "fresh" for k in lifeline_ast.keywords):
-                raise SyntaxError('with spawn accepts only fresh=(Participant.field, ...) or fresh="all"')
+            if lifeline_ast.args or any(k.arg not in {"fresh", "bindings", "retain"} for k in lifeline_ast.keywords):
+                raise SyntaxError('with spawn accepts fresh=, bindings=, and retain=')
             if any(isinstance(n, ast.Return) for statement in node.body for n in ast.walk(statement)):
                 raise SyntaxError("spawn has no return or join. Return belongs to the parent workflow")
             name = _fresh("spawn")
@@ -892,6 +935,7 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, list[tuple[str, str]
         "parallel_": parallel_,
         "spawn": spawn,
         "__zg_field__": Field,
+        "__zg_binding__": _owned_binding,
         "_tag_cond": _tag_cond,
     })
     inferred_vars = _infer_output_vars(fn.__name__, transformer.action_outputs, exec_globals)

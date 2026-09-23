@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from types import ModuleType
 
 from zippergen.deployment import deployment_spec_from_module
-from zippergen.projection import project
+from zippergen.projection import project, project_templates
 from zippergen.syntax import (
     ActStmt,
     AnyStmt,
@@ -38,6 +38,7 @@ from zippergen.syntax import (
     MsgStmt,
     ParallelLocalStmt,
     ParallelStmt, SpawnStmt, ForkStmt,
+    BoundSelectStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
     PlannerAction,
     PureAction,
     RecvStmt,
@@ -50,6 +51,7 @@ from zippergen.syntax import (
     WhileStmt,
     Workflow,
     _ordered_workflow_lifelines,
+    _all_workflow_lifelines,
     is_kappa_ctrl,
 )
 
@@ -145,7 +147,7 @@ def _actions(stmt: AnyStmt) -> list[object]:
         elif isinstance(node, WhileRecvStmt):
             visit(node.body)
             visit(node.exit_body)
-        elif isinstance(node, (SpawnStmt, ForkStmt)):
+        elif isinstance(node, (SpawnStmt, ForkStmt, BoundForkStmt)):
             visit(node.body)
         elif isinstance(node, (ParallelStmt, ParallelLocalStmt)):
             for branch in node.branches:
@@ -170,7 +172,7 @@ def _action_owners(stmt: AnyStmt) -> dict[int, set[str]]:
         elif isinstance(node, (WhileStmt, WhileRecvStmt)):
             visit(node.body)
             visit(node.exit_body)
-        elif isinstance(node, (SpawnStmt, ForkStmt)):
+        elif isinstance(node, (SpawnStmt, ForkStmt, BoundForkStmt)):
             visit(node.body)
         elif isinstance(node, (ParallelStmt, ParallelLocalStmt)):
             for branch_stmt in node.branches:
@@ -379,7 +381,9 @@ class _GlobalRenderer:
         if isinstance(stmt, WhileStmt):
             return self._relevant(stmt.body) or self._relevant(stmt.exit_body)
         if isinstance(stmt, SpawnStmt):
-            return self._relevant(stmt.body)
+            return self._relevant(stmt.body) or (
+                stmt.owner is not None and self._selected(stmt.owner)
+            )
         if isinstance(stmt, ParallelStmt):
             return any(self._relevant(branch) for branch in stmt.branches)
         return False
@@ -428,6 +432,14 @@ class _GlobalRenderer:
         if isinstance(stmt, SpawnStmt):
             fields = ", ".join(f"{f.lifeline.name}.{f.name}" for f in stmt.fresh)
             selection = f"fresh=({fields},)" if fields else ""
+            if stmt.owner is not None:
+                retained = ", ".join(role.name for role in stmt.retain or ())
+                retained = f"({retained},)" if retained else "()"
+                options = [f"bindings={_expr(stmt.bindings)} @ {stmt.owner.name}",
+                           f"retain={retained}"]
+                if selection:
+                    options.append(selection)
+                selection = ", ".join(options)
             return [f"{pad}with spawn({selection}):",
                     *(self.render(stmt.body, indent + 1) or [pad + "    pass"])]
         if isinstance(stmt, ParallelStmt):
@@ -460,7 +472,7 @@ class _LocalRenderer:
             return self._relevant(stmt.branch_true) or self._relevant(stmt.branch_false)
         if isinstance(stmt, (WhileStmt, WhileRecvStmt)):
             return self._relevant(stmt.body) or self._relevant(stmt.exit_body)
-        if isinstance(stmt, ForkStmt):
+        if isinstance(stmt, (ForkStmt, BoundForkStmt)):
             return self._relevant(stmt.body)
         if isinstance(stmt, ParallelLocalStmt):
             return any(self._relevant(branch) for branch in stmt.branches)
@@ -483,10 +495,17 @@ class _LocalRenderer:
         pad = "    " * indent
         if not self._relevant(stmt):
             return []
-        if isinstance(stmt, ForkStmt):
+        if isinstance(stmt, (ForkStmt, BoundForkStmt)):
             body = self.render_annotated(stmt.body, indent + 1, path + (0,))
             return [(path, f"{pad}with fork_session({stmt.site!r}, fresh={stmt.fresh!r}):"),
                     *(body or [(None, pad + "    pass")])]
+        if isinstance(stmt, BoundSelectStmt):
+            return [(path, f"{pad}select_binding({stmt.site!r}, {_expr(stmt.bindings)})")]
+        if isinstance(stmt, BoundSendStmt):
+            operation = "send_invitation" if stmt.kind == "invite" else "send_descriptor"
+            return [(path, f"{pad}{operation}({stmt.site!r}, {stmt.recipient.name!r})")]
+        if isinstance(stmt, BoundReceiveStmt):
+            return [(path, f"{pad}receive_descriptor({stmt.site!r}, {stmt.owner.name!r})")]
         if isinstance(stmt, SeqStmt):
             return [
                 *self.render_annotated(stmt.first, indent, path + (0,)),
@@ -653,8 +672,14 @@ def describe_local_statement(stmt: object) -> str:
         return f"receive loop decision from {stmt.sender.name}"
     if isinstance(stmt, ParallelLocalStmt):
         return "parallel local branches"
-    if isinstance(stmt, ForkStmt):
+    if isinstance(stmt, (ForkStmt, BoundForkStmt)):
         return "start child session"
+    if isinstance(stmt, BoundSelectStmt):
+        return "select child binding"
+    if isinstance(stmt, BoundSendStmt):
+        return "send child invitation" if stmt.kind == "invite" else "send child descriptor"
+    if isinstance(stmt, BoundReceiveStmt):
+        return "receive child descriptor"
     return type(stmt).__name__
 
 
@@ -672,7 +697,7 @@ def render_local_projection_with_pointers(
     lifeline = next(
         (
             item
-            for item in _ordered_workflow_lifelines(workflow)
+            for item in _all_workflow_lifelines(workflow)
             if item.name == participant
         ),
         None,
@@ -680,7 +705,7 @@ def render_local_projection_with_pointers(
     if lifeline is None:
         raise ValueError(
             f"unknown participant {participant!r}; available: "
-            f"{', '.join(item.name for item in _ordered_workflow_lifelines(workflow))}"
+            f"{', '.join(item.name for item in _all_workflow_lifelines(workflow))}"
         )
     active = {tuple(path) for path in active_paths}
     local = project(workflow, lifeline)
@@ -728,7 +753,7 @@ def _workflow_signature(workflow: Workflow, *, agent: str | None = None) -> str:
 
 
 def _overview(workflow: Workflow, module: ModuleType | None) -> str:
-    lifelines = _ordered_workflow_lifelines(workflow)
+    lifelines = _all_workflow_lifelines(workflow)
     actions = _actions(workflow.body)
     lines = [
         f"# workflow: {workflow.name}",
@@ -775,7 +800,7 @@ def workflow_view_data(
     options: ViewOptions | None = None,
 ) -> dict[str, object]:
     options = options or ViewOptions()
-    lifelines = _ordered_workflow_lifelines(workflow)
+    lifelines = _all_workflow_lifelines(workflow)
     names = {item.name for item in lifelines}
     requested = ({options.agent} if options.agent else set(options.agents)) - {None}
     unknown = sorted(str(item) for item in requested if item not in names)
@@ -832,7 +857,7 @@ def render_workflow(
     if options.detail == "overview":
         return _overview(workflow, module)
 
-    lifelines = _ordered_workflow_lifelines(workflow)
+    lifelines = _all_workflow_lifelines(workflow)
     if options.agent:
         lifeline = next((item for item in lifelines if item.name == options.agent), None)
         if lifeline is None:
@@ -863,6 +888,25 @@ def render_workflow(
         ]
         if owned:
             lines.append(f"    return {', '.join(owned)}")
+        if lifeline not in _ordered_workflow_lifelines(workflow):
+            lines = [
+                f"# Generated local projection for {lifeline.name}; read-only code view.",
+                "# This role has no program in the initial session.",
+            ]
+        for (site, role), template in sorted(project_templates(workflow).items()):
+            if role != lifeline.name or not template.recruited:
+                continue
+            template_body = _LocalRenderer(
+                communications_only=options.communications_only,
+                detail=options.detail,
+            ).render(template.program, 1)
+            lines.extend([
+                "",
+                "# Installed in a fresh session after invitation acceptance.",
+                f"@session_role({role!r}, site={site!r})",
+                f"def child__{role}__{site.replace('.', '_')}() -> None:",
+                *(template_body or ["    pass"]),
+            ])
         return "\n".join(lines)
 
     selected = frozenset(options.agents) if options.agents else None

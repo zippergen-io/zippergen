@@ -44,7 +44,9 @@ from zippergen.value_codec import decode_value, dumps_value, encode_value, loads
 #    messages as plain strings, which this version's receivers will not match
 #    -- so such a store is refused at open rather than failing deep inside a
 #    resumed run.
-SCHEMA_VERSION = 4
+# 5: additive bound-spawn creation/activation ledgers. Version 4 is migrated
+# transactionally on writable open; its existing role/message recovery is intact.
+SCHEMA_VERSION = 5
 
 # How many history rows a store keeps when it does not say otherwise. History is
 # optional and recovery never reads it, so this is a retention choice, not a
@@ -116,6 +118,18 @@ CREATE TABLE IF NOT EXISTS outstanding_messages (
 );
 CREATE INDEX IF NOT EXISTS outstanding_by_route
   ON outstanding_messages(receiver, sender, channel, id);
+
+-- A bound child is selected once. Activation rows remain after the role finishes.
+CREATE TABLE IF NOT EXISTS spawn_instances (
+  child_id   TEXT PRIMARY KEY,
+  descriptor TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS spawn_activations (
+  child_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  PRIMARY KEY(child_id, role)
+);
 
 CREATE TABLE IF NOT EXISTS human_tasks (
   task_id    TEXT PRIMARY KEY,
@@ -240,6 +254,7 @@ def open_store(path: str) -> sqlite3.Connection:
         conn.execute("BEGIN IMMEDIATE")
         try:
             _reject_replay_era_store(conn)
+            _migrate_schema_4(conn)
             _check_store_schema(conn)
             conn.execute("COMMIT")
         except BaseException:
@@ -297,7 +312,7 @@ def open_store_readonly(path: str | Path) -> sqlite3.Connection:
             raise StoreSchemaError(
                 "This SQLite file is empty and is not yet a ZipperGen durable store."
             )
-        _check_store_schema(conn)
+        _check_store_schema(conn, readonly=True)
     except BaseException:
         conn.close()
         raise
@@ -393,7 +408,43 @@ def _identify_store(conn: sqlite3.Connection) -> None:
         )
 
 
-def _check_store_schema(conn: sqlite3.Connection) -> None:
+def _migrate_schema_4(conn: sqlite3.Connection) -> None:
+    """Add bound-spawn ledgers without changing existing recovery rows."""
+    tables = {str(row[0]) for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "store_meta" not in tables:
+        return
+    row = conn.execute(
+        "SELECT value FROM store_meta WHERE key='schema_version'"
+    ).fetchone()
+    if row is None or row[0] != "4":
+        return
+    legacy_tables = {
+        "store_meta", "role_state", "outstanding_messages", "human_tasks",
+        "human_task_tokens", "human_task_notifications", "adapter_state",
+        "workflow_results", "history",
+    }
+    if not legacy_tables <= tables:
+        raise StoreSchemaError(
+            "This incomplete schema 4 store is not migrated. Reset the run "
+            "with 'zg run reset' or the deployment with 'zg deploy reset'."
+        )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS spawn_instances ("
+        "child_id TEXT PRIMARY KEY, descriptor TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS spawn_activations ("
+        "child_id TEXT NOT NULL, role TEXT NOT NULL, endpoint TEXT NOT NULL, "
+        "PRIMARY KEY(child_id, role))"
+    )
+    conn.execute(
+        "UPDATE store_meta SET value=? WHERE key='schema_version'",
+        (str(SCHEMA_VERSION),),
+    )
+
+
+def _check_store_schema(conn: sqlite3.Connection, *, readonly=False) -> None:
     """Accept an empty database or this exact current-state schema."""
 
     tables = {
@@ -420,7 +471,7 @@ def _check_store_schema(conn: sqlite3.Connection) -> None:
         "SELECT value FROM store_meta WHERE key='schema_version'"
     ).fetchone()
     actual = None if row is None else str(row[0])
-    if actual != str(SCHEMA_VERSION):
+    if actual != str(SCHEMA_VERSION) and not (readonly and actual == "4"):
         raise StoreSchemaError(
             f"This durable store uses schema {actual or 'unknown'}, but this "
             f"ZipperGen requires schema {SCHEMA_VERSION}. Durable state is not "
@@ -554,6 +605,45 @@ def load_role_state(conn, role: str) -> dict | None:
         "status": row[4],
         "detail": json.loads(row[5]),
     }
+
+
+def record_spawn_instance(conn, child_id: str, descriptor: dict) -> None:
+    """Record one immutable selection in the caller's role-state transaction."""
+    payload = json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
+    row = conn.execute(
+        "SELECT descriptor FROM spawn_instances WHERE child_id=?", (child_id,)
+    ).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO spawn_instances(child_id,descriptor) VALUES(?,?)",
+            (child_id, payload),
+        )
+    elif row[0] != payload:
+        raise ValueError(f"Conflicting descriptor for child {child_id!r}")
+
+
+def load_spawn_instance(conn, child_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT descriptor FROM spawn_instances WHERE child_id=?", (child_id,)
+    ).fetchone()
+    return None if row is None else json.loads(row[0])
+
+
+def record_spawn_activation(conn, child_id: str, role: str, endpoint: str) -> bool:
+    """Return whether this is the first installation of a child role."""
+    row = conn.execute(
+        "SELECT endpoint FROM spawn_activations WHERE child_id=? AND role=?",
+        (child_id, role),
+    ).fetchone()
+    if row is not None:
+        if row[0] != endpoint:
+            raise ValueError(f"Conflicting activation for child {child_id!r} role {role!r}")
+        return False
+    conn.execute(
+        "INSERT INTO spawn_activations(child_id,role,endpoint) VALUES(?,?,?)",
+        (child_id, role, endpoint),
+    )
+    return True
 
 
 def write_role_state(
@@ -1257,6 +1347,20 @@ class DurableChannel:
             "SELECT id, payload, causal_stamp FROM outstanding_messages "
             f"WHERE sender=? AND receiver=? AND channel=?{clause} ORDER BY id LIMIT 1",
             (sender, receiver, channel, *params),
+        ).fetchone()
+        if row is None:
+            return None
+        self._taken.append(int(row[0]))
+        return self._row_to_item(*row)
+
+    def try_get_invitation(self, endpoint: str) -> Item | None:
+        """Take the oldest invitation addressed to an endpoint's init service."""
+        clause, params = self._not_taken()
+        row = self.conn.execute(
+            "SELECT id, payload, causal_stamp FROM outstanding_messages "
+            f"WHERE receiver=? AND channel LIKE 'init:invite:%'{clause} "
+            "ORDER BY id LIMIT 1",
+            (endpoint, *params),
         ).fetchone()
         if row is None:
             return None

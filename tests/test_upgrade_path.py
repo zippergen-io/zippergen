@@ -227,6 +227,34 @@ def test_a_previous_store_is_refused_and_names_the_command(tmp_path):
     assert "reset" in message
 
 
+def test_complete_schema_four_store_migrates_additively(tmp_path):
+    path = tmp_path / "old-complete.sqlite"
+    conn = open_store(str(path))
+    conn.execute("INSERT INTO adapter_state(key,value,updated_at) VALUES(?,?,?)",
+                 ("preserved", '{"value":1}', 0))
+    conn.close()
+    raw = sqlite3.connect(path)
+    raw.execute("DROP TABLE spawn_activations")
+    raw.execute("DROP TABLE spawn_instances")
+    raw.execute("UPDATE store_meta SET value='4' WHERE key='schema_version'")
+    raw.commit()
+    raw.close()
+
+    migrated = open_store(str(path))
+    try:
+        assert migrated.execute(
+            "SELECT value FROM store_meta WHERE key='schema_version'"
+        ).fetchone()[0] == str(SCHEMA_VERSION)
+        assert migrated.execute(
+            "SELECT value FROM adapter_state WHERE key='preserved'"
+        ).fetchone()[0] == '{"value":1}'
+        assert migrated.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='spawn_instances'"
+        ).fetchone() is not None
+    finally:
+        migrated.close()
+
+
 def test_schema_three_is_refused_because_it_did_not_type_control_payloads(tmp_path):
     """The value-codec change is a store format change."""
 

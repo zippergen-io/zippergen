@@ -36,6 +36,7 @@ from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     ParallelStmt, ParallelLocalStmt, SpawnStmt, ForkStmt,
+    BoundSelectStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
     VarExpr, LitExpr, Var, Json,
     LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
@@ -45,7 +46,7 @@ from zippergen.syntax import (
     validate_zvalue,
 )
 from zippergen.control import Residual
-from zippergen.projection import project
+from zippergen.projection import project, project_templates
 from zippergen.formula import Formula as _Formula, subformulas as _subformulas
 from zippergen.monitor import MonitorState
 from zippergen.channels import _SeqQueue, InProcessChannel  # noqa: F401
@@ -651,6 +652,47 @@ def _step(
                        "fresh": list(stmt.fresh)})
             return EmptyStmt(), True
 
+        case BoundSelectStmt():
+            if not isinstance(ch, ScopedChannel):
+                raise RuntimeError("Bound spawn requires an endpoint session scheduler")
+            descriptor = ch.select(stmt, env)
+            if trace:
+                trace({"type": "bind", "lifeline": stmt.owner.name,
+                       "site": stmt.site, "child_session": descriptor["child"],
+                       "bindings": descriptor["bindings"]})
+            return EmptyStmt(), True
+
+        case BoundSendStmt():
+            if not isinstance(ch, ScopedChannel):
+                raise RuntimeError("Bound spawn requires an endpoint session scheduler")
+            descriptor = ch.send_init(stmt)
+            if trace:
+                trace({"type": "init_send", "lifeline": stmt.owner.name,
+                       "kind": stmt.kind, "to": stmt.recipient.name,
+                       "child_session": descriptor["child"]})
+            return EmptyStmt(), True
+
+        case BoundReceiveStmt():
+            if not isinstance(ch, ScopedChannel):
+                raise RuntimeError("Bound spawn requires an endpoint session scheduler")
+            descriptor = ch.receive_init(stmt)
+            if descriptor is None:
+                return stmt, False
+            if trace:
+                trace({"type": "init_recv", "lifeline": stmt.role.name,
+                       "child_session": descriptor["child"]})
+            return EmptyStmt(), True
+
+        case BoundForkStmt():
+            if not isinstance(ch, ScopedChannel):
+                raise RuntimeError("Bound spawn requires an endpoint session scheduler")
+            child = ch.fork_bound(stmt)
+            if trace:
+                trace({"type": "fork", "lifeline": stmt.role.name,
+                       "site": stmt.site, "child_session": child,
+                       "fresh": list(stmt.fresh)})
+            return EmptyStmt(), True
+
         case SkipStmt():
             return EmptyStmt(), True
 
@@ -661,7 +703,7 @@ def _step(
             )
             return EmptyStmt(), True
 
-        case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
+        case ActStmt(lifeline=A, action=action, inputs=ins, outputs=outs):
             if durable and isinstance(action, EffectAction) and resolved is None:
                 ready = getattr(ch, "effect_ready", None)
                 if ready is not None and not ready(stmt):
@@ -707,7 +749,7 @@ def _step(
                         )
                     trace({
                         "type": "act",
-                        "lifeline": threading.current_thread().name,
+                        "lifeline": A.name,
                         "action": action.name,
                         "action_kind": _action_kind(action),
                         "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
@@ -726,7 +768,7 @@ def _step(
                 attempt_id = uuid.uuid4().hex
                 trace_start = {
                     "type": "act_start",
-                    "lifeline": threading.current_thread().name,
+                    "lifeline": A.name,
                     "action": action.name,
                     "action_kind": _action_kind(action),
                     "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
@@ -1025,7 +1067,7 @@ def _exec(
                     **_monitor_trace_fields(monitor),
                 })
 
-        case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
+        case ActStmt(lifeline=A, action=action, inputs=ins, outputs=outs):
             in_vals = tuple(_eval(x, env) for x in ins)
             named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
             # For display, prefer the argument variable name over the formal parameter name.
@@ -1038,7 +1080,7 @@ def _exec(
             if trace and _show:
                 trace({
                     "type": "act_start",
-                    "lifeline": threading.current_thread().name,
+                    "lifeline": A.name,
                     "action": action.name,
                     "action_kind": _action_kind(action),
                     "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
@@ -1112,7 +1154,7 @@ def _exec(
             if trace and _show:
                 trace({
                     "type": "act",
-                    "lifeline": threading.current_thread().name,
+                    "lifeline": A.name,
                     "action": action.name,
                     "action_kind": _action_kind(action),
                     "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
@@ -1391,6 +1433,105 @@ def _build_formula_monitors(
 # Public entry point
 # ---------------------------------------------------------------------------
 
+def _run_bound(wf, lifelines, initial_envs, templates, endpoints,
+               llm_backend, human_backend, assistant_backend, trace, timeout,
+               endpoint_backends=None):
+    from zippergen.sessions import validate_endpoint, resolve_endpoint_backends
+    from zippergen.sqlite_runner import _default_env, _workflow_result
+
+    roots = {role.name: project(wf, role) for role in lifelines}
+    root_bindings = {role.name: role.name for role in lifelines}
+    configured = {validate_endpoint(name) for name in endpoints} | set(root_bindings.values())
+    channels = InProcessChannel()
+    stop = threading.Event()
+    finished = threading.Event()
+    states = {}
+    results = {}
+    threads = []
+    dispatcher = None
+    if getattr(human_backend, "requires_main_thread", False):
+        from zippergen.human_backends import _MainThreadHumanDispatcher
+        dispatcher = _MainThreadHumanDispatcher(human_backend, stop)
+        human_backend = dispatcher.worker_backend
+
+    def worker(endpoint):
+        try:
+            local_llm, local_human, local_assistant = resolve_endpoint_backends(
+                endpoint, configured, endpoint_backends,
+                (llm_backend, human_backend, assistant_backend),
+            )
+            if getattr(local_human, "requires_main_thread", False):
+                raise ValueError("Endpoint-specific main-thread human backends are not supported")
+            role = endpoint if endpoint in roots else None
+            env = _default_env(wf) if role is not None else {}
+            if role is not None:
+                supplied = initial_envs.get(role, {})
+                env.update(supplied)
+                for name, ztype, owner in wf.inputs:
+                    if owner is not None and owner.name == role and name in supplied:
+                        env[name] = _clone_zvalue(
+                            validate_zvalue(
+                                supplied[name], ztype,
+                                context=f"{wf.name} input {name!r}",
+                            ), ztype,
+                        )
+            root = roots.get(endpoint, EmptyStmt())
+            state = SessionState.start(
+                root, role=role, endpoint=endpoint, endpoints=configured,
+                root_bindings=root_bindings, templates=templates, keep_alive=True,
+            )
+            states[endpoint] = state
+            while not finished.is_set():
+                if stop.is_set():
+                    raise WorkflowCancelled("Workflow cancelled")
+                _next, progressed = state.step(
+                    env, channels, wf.ns, local_llm, local_human, trace, stop,
+                    assistant_backend=local_assistant,
+                )
+                if not progressed:
+                    finished.wait(0.01)
+            results[endpoint] = env
+        except BaseException as exc:
+            results[endpoint] = exc
+            stop.set()
+
+    for endpoint in sorted(configured):
+        thread = threading.Thread(target=worker, args=(endpoint,), name=endpoint, daemon=True)
+        threads.append(thread)
+        thread.start()
+
+    deadline = None if timeout <= 0 else time.monotonic() + timeout
+    try:
+        while not finished.is_set():
+            if stop.is_set():
+                break
+            generation = channels.activity_generation()
+            quiet = (len(states) == len(configured)
+                     and all(state.done for state in states.values())
+                     and not channels.has_pending_messages())
+            if quiet and generation == channels.activity_generation():
+                finished.set()
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                stop.set()
+                raise TimeoutError(f"Workflow did not finish within {timeout}s")
+            if dispatcher is not None:
+                dispatcher.service_next(timeout=0.01)
+            else:
+                time.sleep(0.01)
+    finally:
+        if stop.is_set():
+            finished.set()
+            if dispatcher is not None:
+                dispatcher.cancel_pending()
+        for thread in threads:
+            thread.join(timeout=1)
+    for endpoint, outcome in results.items():
+        if isinstance(outcome, BaseException):
+            raise RuntimeError(f"Endpoint {endpoint!r} raised: {outcome}") from outcome
+    final_envs = {role: results[endpoint] for role, endpoint in root_bindings.items()}
+    return _workflow_result(wf, final_envs)
+
 def run(
     wf: Workflow,
     lifelines: list[Lifeline],
@@ -1402,6 +1543,8 @@ def run(
     verbose: bool = False,
     trace=None,
     timeout: float = 60.0,
+    endpoints=None,
+    endpoint_backends=None,
 ) -> object:
     """
     Project ``wf`` onto every lifeline and run all of them concurrently.
@@ -1439,6 +1582,12 @@ def run(
 
     if trace is None and verbose:
         trace = console_trace
+
+    templates = project_templates(wf)
+    if any(t.template.startswith("bound-v1:") for t in templates.values()):
+        return _run_bound(wf, lifelines, initial_envs, templates,
+                          set(endpoints or ()), llm_backend, human_backend,
+                          assistant_backend, trace, timeout, endpoint_backends)
 
     stop = threading.Event()
     human_dispatcher = None

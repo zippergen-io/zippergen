@@ -52,6 +52,8 @@ class InProcessChannel:
     def __init__(self) -> None:
         self._qs: dict[tuple[str, str, str], _SeqQueue] = {}
         self._lock = threading.Lock()
+        self._init_inflight = 0
+        self._activity_generation = 0
 
     def _queue(self, key: tuple[str, str, str]) -> _SeqQueue:
         """Atomically get-or-create the queue for a key.
@@ -80,6 +82,41 @@ class InProcessChannel:
             return self._queue((sender, receiver, channel)).get_nowait()
         except queue.Empty:
             return None
+
+    def try_get_invitation(self, endpoint: str) -> Item | None:
+        with self._lock:
+            queues = [q for (sender, receiver, channel), q in self._qs.items()
+                      if receiver == endpoint and channel.startswith("init:invite:")]
+            for q in queues:
+                try:
+                    item = q.get_nowait()
+                except queue.Empty:
+                    continue
+                self._init_inflight += 1
+                self._activity_generation += 1
+                return item
+        return None
+
+    def complete_invitation(self) -> None:
+        with self._lock:
+            self._init_inflight -= 1
+            self._activity_generation += 1
+
+    def activity_generation(self) -> int:
+        with self._lock:
+            return self._activity_generation
+
+    def has_pending_initialization(self) -> bool:
+        with self._lock:
+            queues = [q for (_, _, channel), q in self._qs.items()
+                      if channel.startswith("init:")]
+            return self._init_inflight > 0 or any(not q._q.empty() for q in queues)
+
+    def has_pending_messages(self) -> bool:
+        with self._lock:
+            return self._init_inflight > 0 or any(
+                not q._q.empty() for q in self._qs.values()
+            )
 
     def get(self, sender: str, receiver: str, channel: str, *,
             stop: threading.Event | None = None) -> Item:

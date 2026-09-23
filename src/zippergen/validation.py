@@ -9,7 +9,7 @@ from types import ModuleType
 from zippergen.availability import workflow_availability_error
 from zippergen.connectors import connector_requirements_from_module
 from zippergen.deployment import deployment_spec_from_module
-from zippergen.projection import project
+from zippergen.projection import project, project_templates
 from zippergen.pools import pool_operations
 from zippergen.syntax import (
     ActStmt,
@@ -24,6 +24,8 @@ from zippergen.syntax import (
     VarExpr,
     Workflow,
     _ordered_workflow_lifelines,
+    _all_workflow_lifelines,
+    participation_set,
 )
 from zippergen.view import ViewOptions, render_workflow
 
@@ -97,7 +99,10 @@ def _spawn_sharing_checks(workflow: Workflow) -> list[dict[str, object]]:
         if isinstance(stmt, SpawnStmt):
             writes = visit(stmt.body, site + ".0")
             fresh = {(field.lifeline.name, field.name) for field in stmt.fresh}
-            inherited = writes - fresh
+            retained = (participation_set(stmt.body) if stmt.bindings is None
+                        else frozenset(stmt.retain or ()))
+            inherited = {(owner, name) for owner, name in writes - fresh
+                         if any(role.name == owner for role in retained)}
             if inherited:
                 fields = ", ".join(f"{owner}.{name}" for owner, name in sorted(inherited))
                 checks.append({
@@ -127,10 +132,51 @@ def _spawn_sharing_checks(workflow: Workflow) -> list[dict[str, object]]:
     return checks
 
 
+def _spawn_interface_checks(workflow: Workflow) -> list[dict[str, object]]:
+    """Check parent availability separately from each child's interface."""
+
+    failures: list[str] = []
+
+    def visit(node, available: frozenset, site: str) -> None:
+        if isinstance(node, SpawnStmt):
+            child = participation_set(node.body)
+            if node.bindings is None:
+                missing = child - available
+                if missing:
+                    failures.append(f"inherited spawn {site} needs parent roles "
+                                    + ", ".join(sorted(role.name for role in missing)))
+            else:
+                if node.owner not in available:
+                    failures.append(f"bound spawn {site} owner {node.owner.name} is unavailable in parent")
+                missing = set(node.retain or ()) - available
+                if missing:
+                    failures.append(f"bound spawn {site} retains unavailable parent roles "
+                                    + ", ".join(sorted(role.name for role in missing)))
+            visit(node.body, child, site + ".0")
+        elif isinstance(node, SeqStmt):
+            visit(node.first, available, site + ".0")
+            visit(node.second, available, site + ".1")
+        elif isinstance(node, IfStmt):
+            visit(node.branch_true, available, site + ".0")
+            visit(node.branch_false, available, site + ".1")
+        elif isinstance(node, WhileStmt):
+            visit(node.body, available, site + ".0")
+            visit(node.exit_body, available, site + ".1")
+        elif isinstance(node, ParallelStmt):
+            for index, branch in enumerate(node.branches):
+                visit(branch, available, site + f".{index}")
+
+    visit(workflow.body, participation_set(workflow.body), "0")
+    return [{"status": "fail", "name": "spawn interface", "detail": detail}
+            for detail in failures]
+
+
 def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, object]:
     lifelines = _ordered_workflow_lifelines(workflow)
     checks: list[dict[str, object]] = []
     names = [lifeline.name for lifeline in lifelines]
+    all_roles = _all_workflow_lifelines(workflow)
+    has_recruits = len(all_roles) > len(lifelines)
     if len(names) != len(set(names)):
         checks.append({
             "status": "fail",
@@ -141,8 +187,27 @@ def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, objec
         checks.append({
             "status": "ok",
             "name": "lifelines",
-            "detail": f"{len(lifelines)} unique lifeline(s): {', '.join(names)}",
+            "detail": (f"{len(lifelines)} unique root lifeline(s): {', '.join(names)}"
+                       if has_recruits else
+                       f"{len(lifelines)} unique lifeline(s): {', '.join(names)}"),
         })
+
+    try:
+        templates = project_templates(workflow)
+        from zippergen.control import program_fingerprint
+        program_fingerprint({}, templates=templates)
+    except Exception as exc:
+        checks.append({
+            "status": "fail", "name": "spawn templates",
+            "detail": f"{type(exc).__name__}: {exc}",
+        })
+    else:
+        if templates:
+            roles = ", ".join(role.name for role in all_roles)
+            checks.append({
+                "status": "ok", "name": "spawn templates",
+                "detail": f"{len(templates)} compiled role template(s); all static roles: {roles}",
+            })
 
     availability_error = workflow_availability_error(workflow)
     checks.append({
@@ -155,6 +220,7 @@ def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, objec
         ),
     })
     checks.extend(_spawn_sharing_checks(workflow))
+    checks.extend(_spawn_interface_checks(workflow))
 
     projections: dict[str, str] = {}
     for lifeline in lifelines:

@@ -1,7 +1,8 @@
 # Experimental spawn
 
 `parallel` runs concurrent branches within one session. `spawn` starts another
-session while the current one continues. Both use the same participants.
+session while the current one continues. The inherited form uses the current
+participants; the bound form below selects endpoints for a new session.
 
 ```python
 with spawn(fresh=(Mailbox.request, Writer.request, Writer.draft)):
@@ -116,6 +117,75 @@ all their sessions before collecting workflow outputs. That is the lifetime of
 the run, not a join inserted into the parent's program. A service or durable
 run stopped with pending children resumes them from its store.
 
+## Dynamic role bindings
+
+Keep a named `@fragment` as the static protocol and choose its endpoints in an
+owner-local value:
+
+```python
+Manager: bindings = select_reviewer(request)
+spawn(AccessReview, bindings=bindings @ Manager,
+      retain=(Manager, IT), fresh="all")
+```
+
+The binding is a JSON mapping such as
+`{"Manager": "Manager", "Reviewer": "reviewer-east", "IT": "IT"}`.
+It must name exactly the child roles, with distinct endpoint IDs. Retained
+roles keep their parent addresses. Omitted `retain` means no retained roles
+in this form. Omitting `bindings` keeps ordinary inherited spawn.
+
+Register additional endpoint IDs with `endpoints=` when calling `run` or
+`run_sqlite`. Root roles retain their same-name endpoints. An endpoint can
+host different roles in different concurrent sessions, but cannot play two
+roles in the same session. The current backend hosts these workers in the
+existing local runtime/store; it does not add network deployment or independent
+administrative stores. Registration and selection do not create remote agents.
+Additional endpoint registration is currently a Python runner API; `zg run`
+and deployment configuration have no corresponding registry option yet. Use
+the executable example below to run recruited endpoints. Selecting an
+unregistered endpoint fails explicitly.
+
+Use `endpoint_backends={"reviewer-east": {"llm": review_backend}}` to select
+backends for a particular endpoint. Supported keys are `llm`, `human`, and
+`assistant`; omitted keys use the runner's corresponding default backend.
+These are Python callables, not remote endpoint addresses. Endpoint-specific
+backends apply to every role hosted there; each action still identifies its
+static role. Configure a separate backend when endpoints need separate provider
+credentials or human-task delivery. Endpoint-specific human callbacks must be
+worker-safe; a main-thread-only human backend can instead be supplied as the
+runner's shared default.
+
+Role programs are projected before endpoint values are known. The owner
+records a binding, sends descriptors to retained roles and invitations to
+recruits, then forks locally if retained. Other retained roles receive their
+descriptor and fork. A recruited role starts after its invitation is accepted,
+even if it had no parent control or the parent has finished. Each role can
+proceed once its own activation permits it; messages may wait for a recipient
+that has not activated yet. There is no global activation barrier.
+
+Recruited fields start fresh and uninitialized, including when the endpoint
+already serves another session. They do not copy that endpoint's root values
+or `Var` defaults. Retained freshness still copies at the local fork, not when
+the owner selects the binding. `fresh="all"` selects retained fields;
+recruited fields are fresh independently. `all_except(...)` may preserve only
+retained fields. Inputs for recruits must arrive by actions or messages.
+
+Selection, fan-out progress and activation are durable runtime state. Once a
+child binding commits, recovery reuses it. This does not make a preceding
+external reviewer-selection action exactly-once; its ordinary effect replay
+window remains. The paper's symbolic invitation calculus assumes reliable
+queues and excludes crashes, so runtime recovery tests are an additional
+engineering guarantee, not its projection theorem.
+
+The configured endpoint registry is part of the durable run's identity. Resume
+with the same registry: adding or removing configured endpoints is currently
+rejected, even if an endpoint has not yet been selected. Changing endpoint
+membership for a live durable run needs a separate lifecycle design.
+
+See [the executable access-review example](../examples/dynamic_spawn/specification.md).
+The exact local view for Reviewer shows its statically compiled child template;
+the global view preserves source-level binding and retention choices.
+
 ## Persistence and compatibility
 
 The existing role-state transaction stores a versioned session registry,
@@ -133,10 +203,13 @@ whose returned claim has not yet committed. The external service must support
 the required redelivery and idempotent acknowledgement. This is not an atomic
 transaction across a mailbox and the workflow store.
 
-No database schema migration is needed. Workflows without spawn retain their
-existing projection, fingerprints and control encoding. Spawn workflows use
-source-tree locations for control tags and parallel namespaces so identical
-fragments at different sites remain distinct.
+Opening a schema-4 store for execution upgrades it transactionally to schema 5
+by adding the spawn-instance and activation ledgers. Existing workflow state
+is preserved; read-only inspection does not upgrade it. Older incompatible
+recovery schemas still require an explicit reset. Workflows without spawn
+retain their existing projection, fingerprints and control encoding. Spawn
+workflows use source-tree locations for control tags and parallel namespaces
+so identical fragments at different sites remain distinct.
 
 Changing a workflow that already has durable sessions still requires the
 existing deployment compatibility checks. Do not resume its store using an

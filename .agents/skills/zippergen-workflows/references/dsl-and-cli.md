@@ -814,6 +814,56 @@ Test overlapping requests, both decision outcomes and fresh-process resume.
 Verify that parent intake can finish with children still pending. The checkout
 example is `examples/spawn/workflow.py`.
 
+### Runtime participant binding
+
+To select the concrete participants of a child session, provide a complete
+owner-local binding with static retained roles:
+
+```python
+Manager: bindings = select_reviewer(request)
+spawn(
+    AccessReview,
+    bindings=bindings @ Manager,
+    retain=(Manager, IT),
+    fresh="all",
+)
+```
+
+`AccessReview` is an ordinary `@fragment`. The binding value is a `Json` mapping
+from every child role name to a concrete endpoint ID, for example
+`{"Manager": "Manager", "Reviewer": "reviewer-east", "IT": "IT"}`.
+Endpoints must be distinct within a session. Retained Manager and IT must keep
+their current endpoints. The other roles are recruited through generated
+invitations; they do not participate in the parent's decisions. Omit `retain`
+to recruit every child role. Without `bindings`, all child roles are inherited
+as before.
+
+Register extra endpoints explicitly with the runner's `endpoints=` argument.
+The existing root participants keep their same-name endpoints. The first
+backend hosts these endpoint workers locally; registration is not remote
+service discovery or endpoint provisioning. See
+`examples/dynamic_spawn/workflow.py` for a runnable demonstration with two
+reviewer endpoints and both approval outcomes.
+
+This registry is currently configured through the Python `run`/`run_sqlite`
+APIs, not `zg run` or deployment settings. An unregistered selected endpoint
+is an error. For endpoint-specific callbacks, pass
+`endpoint_backends={"reviewer-east": {"llm": backend}}`; keys may be `llm`,
+`human`, or `assistant`, and omitted entries use runner defaults.
+
+Retained fresh fields copy at their own local fork. Recruited protocol fields
+always start uninitialized; input arrives through actions or messages. An
+existing endpoint's variables or defaults do not initialize those fields.
+`fresh="all"` and `all_except(...)` apply to retained fields; an exclusion
+cannot make a recruited field inherit state. Nested inherited spawns keep the
+current role/endpoint and cell bindings.
+
+The binding is immutable once selected and recorded. Creation retries resume
+that selection; they do not reset a child's cells. An external selection
+helper still requires ordinary retry-safe effect behavior before its result
+commits. The owner does not wait for invitation acceptance or child completion.
+CPL guards, rebinding, migration and implicit child results remain unsupported.
+
 ## Human actions
 
 Model human authority as a participant and a `@human` action. Use the durable

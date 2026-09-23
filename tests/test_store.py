@@ -51,6 +51,8 @@ EXPECTED_TABLES = {
     "human_tasks",
     "outstanding_messages",
     "role_state",
+    "spawn_instances",
+    "spawn_activations",
     "store_meta",
     "workflow_results",
 }

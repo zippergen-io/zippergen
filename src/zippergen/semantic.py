@@ -33,6 +33,7 @@ from zippergen.syntax import (
     WhileStmt,
     Workflow,
     _ordered_workflow_lifelines,
+    _all_workflow_lifelines,
 )
 
 
@@ -294,6 +295,15 @@ def workflow_semantics(
             }
         if isinstance(stmt, SpawnStmt):
             fresh = sorted(f"{f.lifeline.name}.{f.name}" for f in stmt.fresh)
+            if stmt.owner is not None:
+                binding = {"owner": stmt.owner.name, "expression": _expr(stmt.bindings)}
+                retain = sorted(role.name for role in stmt.retain or ())
+                regions.append({"kind": "spawn", "fresh": fresh,
+                                "binding": binding, "retain": retain,
+                                "context": list(context)})
+                marker = f"spawn:{stmt.owner.name}:{binding['expression']}:{','.join(retain)}"
+                return {"node": "spawn", "fresh": fresh, "binding": binding,
+                        "retain": retain, "body": walk(stmt.body, (*context, marker))}
             regions.append({"kind": "spawn", "fresh": fresh, "context": list(context)})
             return {"node": "spawn", "fresh": fresh,
                     "body": walk(stmt.body, (*context, "spawn:" + ",".join(fresh)))}
@@ -313,7 +323,7 @@ def workflow_semantics(
     protocol = walk(workflow.body)
     result: dict[str, object] = {
         "name": workflow.name,
-        "lifelines": [item.name for item in _ordered_workflow_lifelines(workflow)],
+        "lifelines": [item.name for item in _all_workflow_lifelines(workflow)],
         "inputs": {
             name: {
                 "type": _type_name(value_type),
@@ -337,6 +347,10 @@ def workflow_semantics(
         "skips": skips,
         "protocol": protocol,
     }
+    if any("binding" in region for region in regions):
+        result["root_lifelines"] = [
+            role.name for role in _ordered_workflow_lifelines(workflow)
+        ]
     if module is not None:
         from zippergen.connectors import connector_requirements_from_module
 

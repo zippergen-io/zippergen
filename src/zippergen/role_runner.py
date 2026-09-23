@@ -126,6 +126,11 @@ class RoleRunner:
         monitor=None,
         formula_conditions: dict | None = None,
         stop: threading.Event | None = None,
+        root_role: str | None = None,
+        root_bindings: dict[str, str] | None = None,
+        endpoints: set[str] | None = None,
+        templates: dict | None = None,
+        completion: threading.Event | None = None,
     ) -> None:
         if llm_backend is None:
             llm_backend = mock_llm
@@ -146,7 +151,15 @@ class RoleRunner:
         self.monitor = monitor
         self.formula_conditions = formula_conditions or {}
         self.stop = stop
+        self.root_role = root_role
+        self.root_bindings = root_bindings
+        self.endpoints = endpoints
+        self.templates = templates
+        self.completion = completion
         self.node_paths = statement_node_paths(local_stmt)
+        if templates is not None:
+            for template in templates.values():
+                self.node_paths.update(statement_node_paths(template.program))
 
         self.env, self.residual = self._load_or_seed(env)
         self.channel = DurableChannel(conn, role)
@@ -167,7 +180,11 @@ class RoleRunner:
         if state is not None:
             return self._adopt(state)
         seeded = dict(env)
-        initial = SessionState.start(self.local_stmt) if has_forks(self.local_stmt) else self.local_stmt
+        initial = (SessionState.start(
+            self.local_stmt, role=self.root_role, endpoint=self.role,
+            root_bindings=self.root_bindings, endpoints=self.endpoints,
+            templates=self.templates, keep_alive=self.completion is not None,
+        ) if self.templates is not None or has_forks(self.local_stmt) else self.local_stmt)
         _begin_immediate(self.conn, self.stop)
         try:
             # Another process may have raced us; the first writer wins and we
@@ -196,7 +213,12 @@ class RoleRunner:
         if self.monitor is not None and state["monitor"] is not None:
             self.monitor.restore_state(state["monitor"])
         self.steps = state["steps"]
-        return dict(state["env"]), decode_control(self.local_stmt, state["control"])
+        return dict(state["env"]), decode_control(
+            self.local_stmt, state["control"], templates=self.templates,
+            endpoint=self.role, endpoints=self.endpoints,
+            root_bindings=self.root_bindings,
+            keep_alive=self.completion is not None,
+        )
 
     def _monitor_state(self) -> dict | None:
         return None if self.monitor is None else self.monitor.snapshot_state()
@@ -391,7 +413,8 @@ class RoleRunner:
             session.waiting[key] = waiting
             channel.state.dirty = True
             if trace:
-                trace({"type": "act_start", "lifeline": self.role,
+                trace({"type": "act_start", "lifeline": session.role,
+                       "endpoint": self.role,
                        "action": action.name, "action_kind": "human",
                        "inputs": _jsonify(inputs), "seq": waiting["seq"],
                        "task_id": task_id, "attempt_id": task_id})
@@ -405,7 +428,8 @@ class RoleRunner:
         outputs = {node.outputs[0].name: answer[action.output]}
         del session.waiting[key]
         if trace:
-            trace({"type": "act", "lifeline": self.role, "action": action.name,
+            trace({"type": "act", "lifeline": session.role,
+                   "endpoint": self.role, "action": action.name,
                    "action_kind": "human", "inputs": _jsonify(waiting["inputs"]),
                    "outputs": _jsonify(outputs), "seq": waiting["seq"],
                    "task_id": waiting["task_id"], "attempt_id": waiting["task_id"]})
@@ -546,6 +570,8 @@ class RoleRunner:
 
     def run_live(self) -> None:
         while not isinstance(self.residual, EmptyStmt):
+            if self.completion is not None and self.completion.is_set():
+                return
             if self.stop is not None and self.stop.is_set():
                 raise WorkflowCancelled("Workflow cancelled")
 
