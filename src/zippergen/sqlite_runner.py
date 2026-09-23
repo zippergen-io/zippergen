@@ -23,6 +23,7 @@ from zippergen.store import (
     claim_workflow_identity,
     load_workflow_result,
     list_role_states,
+    list_spawn_instances,
     open_store,
     write_workflow_result,
 )
@@ -79,8 +80,6 @@ class LocalSupervisor:
         verbose: bool = False,
         trace=None,
         timeout: float = 60.0,
-        endpoints=None,
-        endpoint_backends=None,
     ) -> None:
         require_workflow_availability(wf, initial_envs)
         self.wf = wf
@@ -98,8 +97,6 @@ class LocalSupervisor:
         self.assistant_backend = assistant_backend
         self.trace = trace if trace is not None else (console_trace if verbose else None)
         self.timeout = timeout
-        self.endpoints = set(endpoints or ())
-        self.endpoint_backends = endpoint_backends
         self.stop = threading.Event()
 
     def _starting_envs(self) -> dict[str, dict]:
@@ -156,8 +153,8 @@ class LocalSupervisor:
 
     def run(self) -> object:
         templates = project_templates(self.wf)
-        if any(t.template.startswith("bound-v1:") for t in templates.values()):
-            return self._run_bound(templates)
+        if any(t.template.startswith("fresh-v1:") for t in templates.values()):
+            return self._run_fresh(templates)
         local_programs = {
             lifeline.name: project(self.wf, lifeline) for lifeline in self.lifelines
         }
@@ -315,15 +312,15 @@ class LocalSupervisor:
             conn.close()
         return result
 
-    def _run_bound(self, templates) -> object:
-        from zippergen.sessions import validate_endpoint, resolve_endpoint_backends
+    def _run_fresh(self, templates) -> object:
+        from zippergen.sessions import validate_root_endpoint
         from zippergen.syntax import EmptyStmt
 
         roots = {role.name: project(self.wf, role) for role in self.lifelines}
-        root_bindings = {role.name: role.name for role in self.lifelines}
-        configured = {validate_endpoint(name) for name in self.endpoints} | set(root_bindings)
-        local_programs = {endpoint: roots.get(endpoint, EmptyStmt())
-                          for endpoint in configured}
+        root_bindings = {role.name: validate_root_endpoint(role.name)
+                         for role in self.lifelines}
+        configured = set(root_bindings)
+        local_programs = dict(roots)
         self._claim_identity(local_programs, templates)
         existing = self._load_existing_result()
         if existing is not _NO_RESULT:
@@ -348,25 +345,19 @@ class LocalSupervisor:
             dispatcher = _MainThreadHumanDispatcher(backend, self.stop)
             backend = dispatcher.worker_backend
 
-        def worker(endpoint):
+        def worker(endpoint, static_role):
             conn = None
             try:
-                local_llm, local_human, local_assistant = resolve_endpoint_backends(
-                    endpoint, configured, self.endpoint_backends,
-                    (self.llm_backend, backend, self.assistant_backend),
-                )
-                if getattr(local_human, "requires_main_thread", False):
-                    raise ValueError("Endpoint-specific main-thread human backends are not supported")
                 conn = open_store(self.store_path)
                 runner = RoleRunner(
-                    conn, endpoint, local_programs[endpoint],
+                    conn, endpoint, local_programs.get(endpoint, EmptyStmt()),
                     starting.get(endpoint, {}), self.wf.ns,
-                    llm_backend=local_llm,
-                    human_backend=local_human,
-                    assistant_backend=local_assistant,
+                    llm_backend=self.llm_backend,
+                    human_backend=backend,
+                    assistant_backend=self.assistant_backend,
                     trace=self.trace, stop=self.stop,
                     root_role=endpoint if endpoint in roots else None,
-                    root_bindings=root_bindings, endpoints=configured,
+                    root_bindings=root_bindings,
                     templates=templates, completion=completion,
                 )
                 results[endpoint] = runner.run()
@@ -377,11 +368,14 @@ class LocalSupervisor:
                 if conn is not None:
                     conn.close()
 
-        for endpoint in sorted(configured):
-            thread = threading.Thread(target=worker, args=(endpoint,),
-                                      name=endpoint, daemon=True)
+        def start_worker(endpoint, static_role):
+            thread = threading.Thread(target=worker, args=(endpoint, static_role),
+                                      name=static_role, daemon=True)
             threads.append(thread)
             thread.start()
+
+        for endpoint in sorted(configured):
+            start_worker(endpoint, endpoint)
 
         observer = open_store(self.store_path)
         deadline = None if self.timeout <= 0 else time.monotonic() + self.timeout
@@ -398,10 +392,17 @@ class LocalSupervisor:
                     pending_messages = observer.execute(
                         "SELECT 1 FROM outstanding_messages LIMIT 1"
                     ).fetchone()
+                    creations = list_spawn_instances(observer)
                     observer.execute("COMMIT")
                 except BaseException:
                     observer.execute("ROLLBACK")
                     raise
+                for descriptor in creations:
+                    for role, endpoint in descriptor["bindings"].items():
+                        if role in descriptor["retain"] or endpoint in configured:
+                            continue
+                        configured.add(endpoint)
+                        start_worker(endpoint, role)
                 if (len(states) == len(configured)
                         and all(row["status"] == "done" for row in states)
                         and pending_messages is None):
@@ -451,8 +452,6 @@ def run_sqlite(
     verbose: bool = False,
     trace=None,
     timeout: float = 60.0,
-    endpoints=None,
-    endpoint_backends=None,
 ) -> object:
     """Run ``wf`` locally through the durable SQLite role runner."""
     if store_path is None:
@@ -469,8 +468,6 @@ def run_sqlite(
                 verbose=verbose,
                 trace=trace,
                 timeout=timeout,
-                endpoints=endpoints,
-                endpoint_backends=endpoint_backends,
             ).run()
 
     return LocalSupervisor(
@@ -484,6 +481,4 @@ def run_sqlite(
         verbose=verbose,
         trace=trace,
         timeout=timeout,
-        endpoints=endpoints,
-        endpoint_backends=endpoint_backends,
     ).run()

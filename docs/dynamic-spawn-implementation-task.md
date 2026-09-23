@@ -1,256 +1,129 @@
-# Implementation task: dynamically bound spawn
+# Implementation contract: spawn with fresh participants
 
-Extend ZipperGen's existing spawn implementation with runtime role-to-endpoint
-binding. Keep the source API small and preserve inherited spawn behavior.
-Implement the feature; do not stop at parsing or an architectural proposal.
+This contract supersedes the previous owner-supplied binding design. Protocol
+roles and their projections remain static; spawn creates session instances and,
+when requested, fresh endpoints. Arbitrary existing-endpoint recruitment is
+not supported in this version.
 
-Semantic reference: `../paper-spawn/paper/main.tex`, reviewed at paper commit
-`975650a26bfea6ad0ca738058965c7fd71fc0dc7`. Read its role-interface, admissible
-binding, initialization, projection and operational definitions before coding.
-Record the actual paper revision used and identify any subsequent semantic
-changes. The paper's symbolic model excludes crashes and duplicate sends;
-recovery below is an engineering refinement, not a proved paper guarantee.
+## Source API
 
-## 1. Surface API: extend the existing Python DSL
-
-The paper's `spawn P with b @D` is explanatory notation. Do not add a second
-text parser or a new `protocol` declaration language for this task. ZipperGen
-already parses Python ASTs and supports named `@fragment` bodies:
+Inherited spawn remains unchanged:
 
 ```python
-spawn(AccessReview)
-spawn(AccessReview, fresh=(Manager.request, IT.request))
-spawn(AccessReview, fresh="all")
-spawn(AccessReview, fresh=all_except(Manager.preferences))
+spawn(Onboarding)
+spawn(Onboarding, fresh="all")
+spawn(Onboarding, fresh=all_except(HR.preferences))
 ```
 
-Keep those forms and the existing `with spawn(...):` body form. The proposed
-new form is:
+Every child role retains its parent's endpoint. No initiator is required.
+
+Fresh-participant spawn uses:
 
 ```python
-Manager: bindings = select_reviewer(request)
-spawn(
-    AccessReview,
-    bindings=bindings @ Manager,
-    retain=(Manager, IT),
-    fresh="all",
-)
+spawn(Onboarding, at=HR, retain=(HR,), fresh=(HR.hire, HR.confirmation))
 ```
 
-`bindings @ Manager` is DSL syntax for a value owned by Manager, consistent
-with existing owner annotations. Extend AST rewriting so it is evaluated at
-runtime, not during Python workflow construction. Use an equally small
-Python-compatible variation only if the architecture requires it; document
-why. Reuse `@fragment` rather than introducing independently deployed child
-workflow declarations. Derive and compile each child template statically.
+The equivalent `with spawn(at=HR, ...):` block is supported. `at` names a
+parent role. `retain` lists child roles also available in the parent; omitted
+`retain` is empty. All other child roles receive distinct fresh endpoints.
+The initiator need not occur in the child or be retained. Reject the former
+`bindings=` argument instead of silently treating it as inherited spawn.
 
-Without `bindings`, all child roles are retained. Omit `retain`; if accepted
-explicitly, it must equal the entire child interface. With `bindings`, omitted
-`retain` means the empty set: every child role is recruited. Reject `retain`
-without a binding if it would change inherited semantics. Omitted `fresh`
-continues to mean no selected retained cells are copied.
+Source code does not construct descriptors or name session/endpoint IDs.
 
-Descriptors, invitations, fork counters and session IDs are runtime internals,
-not author-facing requirements. Exact local/debug views may expose generated
-instructions when useful for inspection; ordinary global views should show
-source-level spawn and its parameters.
+## Static support and projection
 
-## 2. Inspect and preserve the current architecture
+For child interface R_P and parent interface R:
 
-Read the workflow skill and its DSL reference, then inspect the builder, AST,
-validation, projection, session scheduler, channels, role runner, store,
-control serialization, human-task identity, views and existing spawn tests.
-Current starting points include `builder.py:spawn`, `syntax.py:SpawnStmt`,
-`projection.py`, `sessions.py`, `role_runner.py` and `store.py`.
+- inherited spawn requires R_P contained in R and has support R_P;
+- initiated spawn requires D in R and I contained in R_P intersect R, with
+  current-session support I union {D}.
 
-The current runtime equates a static lifeline with a physical endpoint.
-`Session.bindings` currently maps variable names to cell allocations: it is
-not a role-to-endpoint binding. Keep these concepts distinct in the code.
-The current durable control decoder locates child programs in one root AST;
-it must also identify installed role templates correctly.
+Fresh roles receive no enclosing parent choices. Compile every child role
+program before endpoint identities are known. Templates retain stable site
+identities through nested and repeated spawns. Preserve inherited projection,
+control encoding and fingerprints. Incompatible old bound-spawn controls must
+fail explicitly on durable resume.
 
-Preserve existing inherited spawn, `fresh="all"`, `all_except(...)`, sharing
-warnings and participant-local parallel joins. Preserve non-spawn projection
-and behavior. Explicitly version any changed durable encoding and either
-migrate supported old states or reject incompatible resume clearly; never
-silently reinterpret persisted state.
+## Allocation, initialization and execution
 
-## 3. Roles, endpoints and templates
+Every dynamic spawn has a fresh child session identity. The initiated form
+records a complete immutable role-to-endpoint binding: retained roles keep
+parent addresses; other roles get globally fresh addresses within the run.
+Use a collision-free namespace derived from child identity and role, disjoint
+from initial endpoints; no globally consulted name registry is needed.
 
-Separate static protocol roles from concrete endpoint identities. A binding
-is a serializable map with exactly the child interface's role keys and
-canonical endpoint identifiers. It is total, injective within one session and
-immutable after selection. Retained roles must preserve their parent address.
-Endpoint identity is not a display label, secret or arbitrary Python object.
+Create actual endpoint workers and register their durable state. Allocation
+precedes use of their identities, and initialization precedes child execution.
+Retained roles receive their descriptor and fork locally. Fresh workers accept
+initialization and install their compiled local role programs. Different
+roles can start at different times. There is no global activation barrier or
+child completion join. Parent completion must not terminate pending children.
 
-Supply a minimal endpoint/template registration or resolution mechanism using
-the existing managed runtime and transports. An endpoint can exist without
-having a parent-session role. An invitation activates precompiled role code;
-it does not ship executable code or recompile for an address. Bind descriptors
-to the static template/site and compatible protocol version.
+An endpoint keeps its role in every session that retains it. Role backend
+configuration must continue to work when a fresh endpoint's identity differs
+from its role name. The current backend hosts workers locally; machines,
+credentials, human accounts and remote transport remain external concerns.
 
-For the first implementation, configured endpoints hosted by the existing
-runtime are sufficient. Exercise real logical routing and endpoint-local
-state, not a mock binding table that still runs everything in fixed role
-slots. Do not add a remote network backend merely for this task. State this
-backend boundary clearly: it is not yet isolation across administrative
-organizations. Explain how action/backend configuration and credentials resolve
-for the bound endpoint; do not accidentally reuse another endpoint's settings
-just because the role name matches.
+## Field initialization
 
-Keep the root's default binding compatible with existing workflows. A single
-endpoint may execute multiple sessions, including different roles in different
-sessions. It may be recruited despite appearing in the parent under another
-role. Retention is explicit, never inferred from equal addresses.
+Keep three distinct notions: new session, new endpoint, new field cell.
+Selected retained fields copy from one local pre-fork store at the retained
+role's fork; unselected fields keep their current cell references. Missing
+values remain missing. Fresh endpoint fields start uninitialized and receive
+initial application data through explicit messages or actions. Neither a
+module-level default nor another participant's same-named cell supplies their
+values. `fresh="all"` and `all_except(...)` select retained fields only.
+Descendants may keep inherited cells after their allocating session finishes.
 
-The binding owner belongs to the parent but need not belong to the child.
-The paper also permits an owner whose role name occurs in the child but is
-not retained; preserve this case, including self-invitation when applicable.
+## Recovery
 
-## 4. Creation and local progress
+Persist allocation and creation progress atomically with the initiating local
+step. A committed child keeps its endpoint identities across retries. Resume
+partial initialization, recreate recorded workers and deduplicate activation,
+including stale initialization messages after completion. Retained copy and
+local installation commit together. Completion checks must account for every
+allocated worker and outstanding initialization/application message.
 
-Inherited spawn keeps its existing initiator-free local forks and introduces
-no descriptor traffic or new global barrier.
+A persistent allocation ledger is bookkeeping for recovery, not a distributed
+consensus/name-allocation service. External effects keep their existing replay
+contract. Do not claim atomicity with a mailbox, human delivery service, or
+remote machine provisioner.
 
-For a bound spawn:
+## Validation and acceptance
 
-1. The owner records the child identity and validated binding.
-2. It sends that same descriptor to retained roles other than itself and
-   invitations to recruited roles in a fixed deterministic order.
-3. If retained, the owner forks after its outgoing initialization sends.
-4. Other retained roles receive and validate their descriptor, then fork.
-5. A recruited endpoint accepts its invitation and installs its child role.
+Validate parent/child role interfaces, initiator availability, retained role
+membership, retained-field selectors, variable availability at fresh endpoints,
+template compatibility, and reserved endpoint namespaces. Keep CPL-with-spawn
+rejection. Update views, snapshots, fingerprints and relevant CLI paths.
 
-Preserve the paper's per-site visit agreement and single counter increment;
-a subsequent fork must not increment an already recorded bound-spawn visit.
-A retained receive must check the expected child visit, site/template and
-address. Reject conflicting descriptors rather than installing inconsistent
-bindings.
+Exercise:
 
-A child role starts after its own activation, without a global activation
-barrier. A parent continues after its own creation obligations; it does not
-wait for all invitations to arrive or for child completion. Application
-messages sent before their destination activates must remain queued.
+- inherited default/explicit/all/all-except behavior;
+- owner absent from child, empty retention, owner not retained;
+- repeated, nested and concurrent allocations with distinct identities;
+- new endpoint fields initialized by messages/actions, copied retained inputs;
+- overlapping child sessions on retained endpoints;
+- parent continuation before child completion and fair initialization;
+- crash/restart before and after allocation and partial initialization;
+- idempotent stale initialization and rejection of conflicts;
+- static-role model/human routing at dynamically created endpoints;
+- non-spawn compatibility and schema upgrades.
 
-Invitation acceptance must remain runnable when an endpoint has no parent
-role or its other controls are blocked/finished. Parent termination must not
-terminate children, pending invitations or initialization delivery. Finite-run
-completion must account for outstanding activation work.
+The running example is HR onboarding Alice and Bob: copy HR.hire at each
+local fork, send it to Employee.details, compute Employee.response, and send
+it to child-local HR.confirmation. Two sessions share HR but use distinct
+new Employee endpoints. Arrival and human behavior are represented by fake
+local actions in the executable example.
 
-## 5. Routing, state and participant support
+Validate the example, inspect global and exact role views, compare semantic
+snapshots, run focused tests and the full suite, and mirror packaged workflow
+skill updates. Do not change unrelated Lean experiments or draft documents.
 
-Keep logical routes session- and branch-scoped with static sender/receiver
-roles. Resolve physical delivery through the installed immutable binding.
-Keep initialization routes distinct from application and decision routes.
-Controls, counters, pending actions and human tasks must distinguish execution,
-session and role as needed; equal source locations or input values in different
-sessions must not collide.
+## Formal boundary
 
-Separate endpoint-local stores and role/session cell allocations. Same field
-names at different roles or allocations must not alias. Retained unselected
-fields keep the actual inherited allocation, including an ancestor's cell.
-Selected retained fields are copied from one pre-fork local store at that
-role's fork, not at the owner's binding selection. This is not a global
-snapshot. Preserve deep-copy and missing-value behavior and cell lifetimes.
-
-Every recruited protocol field starts fresh and uninitialized at acceptance.
-Do not fall back to endpoint/root cells, existing `Var` defaults or another
-session's fields. Pass inputs through ordinary actions/messages before reads.
-Persistent recruited-endpoint settings are not protocol-cell inheritance and
-are outside this first calculus.
-
-For bound spawn, `fresh="all"` selects child-relevant fields of retained roles;
-recruited fields are fresh independently. Preserve `all_except(...)` for
-retained fields; reject attempts to inherit recruited fields through exclusions.
-Field inference must respect nested session/retention boundaries rather than
-blindly collecting every syntactically occurring role/field.
-
-Implement current-session support exactly: inherited spawn contributes the
-child interface; bound spawn contributes retained roles plus the binding
-owner. Recruits do not receive enclosing parent decisions merely because they
-occur inside a child. Validate parent availability separately from child roles.
-
-## 6. Durable creation, not an external exactly-once claim
-
-Define one durable creation record per logical child, containing its stable
-identity, immutable binding, template/version and creation progress. Commit
-selection with the owner's counter/continuation before publishing any
-initialization traffic that can activate that child. Resume partial fan-out
-using that record, never a freshly selected binding.
-
-Commit each retained fork and its copy with parent advancement. Commit an
-acceptance with installation of its child control and cells. Retries must not
-recopy changed parent values or reset an already installed child's state.
-Reuse the existing transactional message conventions where possible; use
-durable outbox/receipt state if required. Duplicate identical activation must
-not create a second instance, including after the original child finishes;
-conflicting reuse of an identity must fail clearly.
-
-The guarantee is one committed selection/activation per logical instance.
-Pure evaluation before a failed commit may repeat. An external selector in a
-preceding action still has the existing effect replay boundary; do not claim
-that this feature makes discovery/claims exactly-once across external stores.
-Prefer the surface binding operand to read an already recorded owner-local
-value. Do not reevaluate a previously committed binding during retry.
-
-## 7. Validation and observable behavior
-
-Reject missing/extra/unknown role keys, invalid endpoint values, noninjective
-bindings, retained addresses that changed, invalid retain sets, freshness or
-exclusions naming recruited roles, an unavailable owner, and nonlocal binding
-reads when statically detectable. Check child inputs under fresh recruited
-state, not under parent availability. Detect missing/incompatible templates.
-Distinguish an invalid endpoint from a valid temporarily unavailable endpoint;
-the latter must not produce false successful completion.
-
-Update projection views, semantic snapshots/diffs, fingerprints, validation
-and relevant inspection output. Keep existing CPL-with-spawn rejection; this
-task does not establish a CPL semantics for dynamic endpoints.
-
-## 8. Acceptance tests and example
-
-Retain all existing spawn regression tests. Add focused in-memory and durable
-coverage, using fake services and no live credentials:
-
-- Inherited explicit/default/all/all-except freshness remains compatible.
-- One/multiple recruits; mixed roles; empty retain; owner absent from child;
-  owner role recruited rather than retained; self-invitation where admissible.
-- Different sessions share endpoints under different role names without
-  mixing messages, state, human answers or control decisions.
-- A recruited endpoint can own a child decision, but receives no enclosing
-  parent decision. Nested and repeated-site spawns agree on distinct identities.
-- A recruit reads no pre-existing endpoint protocol state; nested retained
-  children can inherit its newly allocated cells correctly.
-- Child communication can precede acceptance at the destination; blocked or
-  completed parent controls do not prevent acceptance/child progress.
-- Crash injection before/after selection commit, partial fan-out, retained
-  descriptor receipt, local fork/copy and recruited activation. Resume in a
-  fresh process. Test duplicates/conflicts and stale delivery after completion.
-- Invalid bindings/retention and incompatible durable/template versions fail
-  clearly. Existing non-spawn behavior stays compatible.
-
-Provide an executable `@fragment AccessReview` example with Manager, Reviewer
-and IT. Manager sends the request to Reviewer; Reviewer owns approval and sends
-the approved request to IT; IT performs a fake provisioning action. A parent
-selects different Reviewer endpoints for overlapping children, retaining
-Manager and IT with `fresh="all"`. Reviewer gets its inputs by message and is
-not a participant of the parent control flow. Exercise approval and rejection.
-
-Validate the example, inspect global and each exact local view, and inspect
-semantic snapshot/diff output. Update example specification, user documentation
-and the packaged workflow skill plus its repository mirror. Run focused tests,
-then the required broader checks appropriate to the runtime/schema change.
-
-## 9. Delivery and exclusions
-
-Implement in reviewable increments: API/IR and role support; endpoint/template
-execution and activation; durable recovery; views/docs/integration validation.
-An intermediate stub is not completion of this task. Report the final concrete
-syntax, changed state/identity model, recovery boundaries, backend coverage,
-checks run and deviations from the paper. Tests are not a machine-checked
-refinement proof of the implementation.
-
-Do not add bags/pools, discovery protocols, distributed binding construction,
-rebinding, migration, mid-session joining, capability negotiation, cancellation,
-child result handles, implicit return channels, CPL support or a new scheduler
-policy. Endpoint admission/discovery and remote transport remain separate work.
+The paper models fresh endpoint allocation, endpoint-local words and activation
+causality explicitly. Recheck allocation freshness, descriptor agreement,
+activation-before-execution, endpoint assembly, erasure and inherited-fragment
+conservativity. Separate mathematical arguments from checked Lean results;
+the old fixed-participant mechanization is not a proof of this extension.

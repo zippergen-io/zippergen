@@ -99,7 +99,7 @@ def _spawn_sharing_checks(workflow: Workflow) -> list[dict[str, object]]:
         if isinstance(stmt, SpawnStmt):
             writes = visit(stmt.body, site + ".0")
             fresh = {(field.lifeline.name, field.name) for field in stmt.fresh}
-            retained = (participation_set(stmt.body) if stmt.bindings is None
+            retained = (participation_set(stmt.body) if stmt.owner is None
                         else frozenset(stmt.retain or ()))
             inherited = {(owner, name) for owner, name in writes - fresh
                          if any(role.name == owner for role in retained)}
@@ -140,7 +140,7 @@ def _spawn_interface_checks(workflow: Workflow) -> list[dict[str, object]]:
     def visit(node, available: frozenset, site: str) -> None:
         if isinstance(node, SpawnStmt):
             child = participation_set(node.body)
-            if node.bindings is None:
+            if node.owner is None:
                 missing = child - available
                 if missing:
                     failures.append(f"inherited spawn {site} needs parent roles "
@@ -176,7 +176,7 @@ def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, objec
     checks: list[dict[str, object]] = []
     names = [lifeline.name for lifeline in lifelines]
     all_roles = _all_workflow_lifelines(workflow)
-    has_recruits = len(all_roles) > len(lifelines)
+    has_allocated_roles = len(all_roles) > len(lifelines)
     if len(names) != len(set(names)):
         checks.append({
             "status": "fail",
@@ -188,7 +188,7 @@ def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, objec
             "status": "ok",
             "name": "lifelines",
             "detail": (f"{len(lifelines)} unique root lifeline(s): {', '.join(names)}"
-                       if has_recruits else
+                       if has_allocated_roles else
                        f"{len(lifelines)} unique lifeline(s): {', '.join(names)}"),
         })
 

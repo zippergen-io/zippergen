@@ -93,13 +93,13 @@ def encode_control(root: LocalStmt, residual: Residual | SessionState) -> dict:
 
 
 def decode_control(root: LocalStmt, data: dict, *, templates=None, endpoint=None,
-                   endpoints=None, root_bindings=None, keep_alive=False) -> Residual | SessionState:
+                   root_bindings=None, keep_alive=False) -> Residual | SessionState:
     """Rebuild a residual from encoded control state and a projected program."""
 
     if data.get("k") == "sessions":
         return SessionState.decode(
             root, data, templates=templates, endpoint=endpoint,
-            endpoints=endpoints, root_bindings=root_bindings,
+            root_bindings=root_bindings,
             keep_alive=keep_alive,
         )
 
@@ -314,7 +314,7 @@ def program_fingerprint(local_programs: Mapping[str, object], *, templates=None)
                 "program": _shape(spec.program),
                 "interface": [item.name for item in spec.interface],
                 "retain": [item.name for item in spec.retain],
-                "recruited": spec.recruited,
+                "fresh_endpoint": spec.fresh_endpoint,
                 "fresh": list(spec.fresh),
             }
             for (site, role), spec in sorted(templates.items())

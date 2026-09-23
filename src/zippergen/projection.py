@@ -11,7 +11,7 @@ from dataclasses import replace, dataclass
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt, SpawnStmt, ForkStmt,
-    BoundSelectStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
+    AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
     SendStmt, RecvStmt, SelfAssignStmt, IfRecvStmt, WhileRecvStmt,
     ParallelLocalStmt,
     Lifeline, LocalStmt, AnyStmt, Var, VarExpr, LitExpr,
@@ -31,7 +31,7 @@ class SpawnTemplate:
     template: str
     interface: tuple[Lifeline, ...]
     retain: tuple[Lifeline, ...]
-    recruited: bool
+    fresh_endpoint: bool
     fresh: tuple[str, ...]
 
 
@@ -151,25 +151,25 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
         case SeqStmt(first=p1, second=p2):
             return cast(LocalStmt, seq(_project(p1, A, context, channel, site + ".0"), _project(p2, A, context, channel, site + ".1")))
 
-        case SpawnStmt(body=body, fresh=fresh, bindings=bindings, owner=owner, retain=retain):
+        case SpawnStmt(body=body, fresh=fresh, owner=owner, retain=retain):
             interface = tuple(sorted(context.participants(body), key=lambda role: role.name))
-            if bindings is None and A not in interface:
+            if owner is None and A not in interface:
                 return EmptyStmt()
-            if bindings is not None and A != owner and A not in (retain or ()):
+            if owner is not None and A != owner and A not in (retain or ()):
                 return EmptyStmt()
             names = tuple(sorted(field.name for field in fresh if field.lifeline == A))
             # Guard-only fields and declared but currently unused scratch cells
             # are valid selections too. They need not occur in an action.
             if any(name not in context._occupied for name in names):
                 raise ValueError(f"spawn fresh selects an undeclared field at {A.name}")
-            if bindings is None:
+            if owner is None:
                 child = _project(body, A, context, "main", site + ".0")
                 return ForkStmt(A, site, child, names)
             retained = tuple(sorted(retain or (), key=lambda role: role.name))
-            template = f"bound-v1:{site}:{canonical_construct_key(stmt)}"
+            template = f"fresh-v1:{site}:{canonical_construct_key(stmt)}"
             if A == owner:
                 instructions: list[LocalStmt] = [
-                    BoundSelectStmt(owner, site, bindings, interface, retained, template),
+                    AllocateSessionStmt(owner, site, interface, retained, template),
                 ]
                 for role in sorted((set(interface) - ({owner} if owner in retained else set())),
                                    key=lambda role: role.name):
@@ -314,11 +314,11 @@ def project(wf: Workflow, lifeline: Lifeline) -> LocalStmt:
 
 
 def project_templates(wf: Workflow) -> dict[tuple[str, str], SpawnTemplate]:
-    """Compile every child role once, including roles recruited at nested sites.
+    """Compile every child role once, including roles allocated at nested sites.
 
     Keys are ``(static_spawn_site, role_name)``. Session instances reuse this
-    code with immutable runtime binding descriptors; no endpoint-specific code
-    is generated when an invitation arrives.
+    code with immutable runtime allocation descriptors; no endpoint-specific code
+    is generated when a fresh endpoint starts.
     """
 
     occupied = (
@@ -333,9 +333,9 @@ def project_templates(wf: Workflow) -> dict[tuple[str, str], SpawnTemplate]:
     def walk(node: AnyStmt, site: str) -> None:
         if isinstance(node, SpawnStmt):
             interface = tuple(sorted(participation_set(node.body), key=lambda role: role.name))
-            retained = (interface if node.bindings is None else
+            retained = (interface if node.owner is None else
                         tuple(sorted(node.retain or (), key=lambda role: role.name)))
-            template = (f"bound-v1:{site}:{canonical_construct_key(node)}" if node.bindings is not None
+            template = (f"fresh-v1:{site}:{canonical_construct_key(node)}" if node.owner is not None
                         else f"inherited-v1:{site}:{canonical_construct_key(node)}")
             for role in interface:
                 program = _project(node.body, role, _Context(frozenset(occupied), True),

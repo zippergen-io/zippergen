@@ -38,7 +38,7 @@ from zippergen.syntax import (
     MsgStmt,
     ParallelLocalStmt,
     ParallelStmt, SpawnStmt, ForkStmt,
-    BoundSelectStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
+    AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
     PlannerAction,
     PureAction,
     RecvStmt,
@@ -435,7 +435,7 @@ class _GlobalRenderer:
             if stmt.owner is not None:
                 retained = ", ".join(role.name for role in stmt.retain or ())
                 retained = f"({retained},)" if retained else "()"
-                options = [f"bindings={_expr(stmt.bindings)} @ {stmt.owner.name}",
+                options = [f"at={stmt.owner.name}",
                            f"retain={retained}"]
                 if selection:
                     options.append(selection)
@@ -499,8 +499,8 @@ class _LocalRenderer:
             body = self.render_annotated(stmt.body, indent + 1, path + (0,))
             return [(path, f"{pad}with fork_session({stmt.site!r}, fresh={stmt.fresh!r}):"),
                     *(body or [(None, pad + "    pass")])]
-        if isinstance(stmt, BoundSelectStmt):
-            return [(path, f"{pad}select_binding({stmt.site!r}, {_expr(stmt.bindings)})")]
+        if isinstance(stmt, AllocateSessionStmt):
+            return [(path, f"{pad}allocate_session({stmt.site!r}, retain={tuple(role.name for role in stmt.retain)!r})")]
         if isinstance(stmt, BoundSendStmt):
             operation = "send_invitation" if stmt.kind == "invite" else "send_descriptor"
             return [(path, f"{pad}{operation}({stmt.site!r}, {stmt.recipient.name!r})")]
@@ -674,8 +674,8 @@ def describe_local_statement(stmt: object) -> str:
         return "parallel local branches"
     if isinstance(stmt, (ForkStmt, BoundForkStmt)):
         return "start child session"
-    if isinstance(stmt, BoundSelectStmt):
-        return "select child binding"
+    if isinstance(stmt, AllocateSessionStmt):
+        return "allocate child session and fresh endpoints"
     if isinstance(stmt, BoundSendStmt):
         return "send child invitation" if stmt.kind == "invite" else "send child descriptor"
     if isinstance(stmt, BoundReceiveStmt):
@@ -894,7 +894,7 @@ def render_workflow(
                 "# This role has no program in the initial session.",
             ]
         for (site, role), template in sorted(project_templates(workflow).items()):
-            if role != lifeline.name or not template.recruited:
+            if role != lifeline.name or not template.fresh_endpoint:
                 continue
             template_body = _LocalRenderer(
                 communications_only=options.communications_only,
@@ -902,7 +902,7 @@ def render_workflow(
             ).render(template.program, 1)
             lines.extend([
                 "",
-                "# Installed in a fresh session after invitation acceptance.",
+                "# Installed on a fresh endpoint after initialization.",
                 f"@session_role({role!r}, site={site!r})",
                 f"def child__{role}__{site.replace('.', '_')}() -> None:",
                 *(template_body or ["    pass"]),

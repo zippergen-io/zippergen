@@ -347,12 +347,12 @@ def _canon_stmt(node: "AnyStmt") -> str:
             return f"if({_canon_cond(c)}@{b.name},{_canon_stmt(t)},{_canon_stmt(f)})"
         case WhileStmt(condition=c, owner=b, body=bd, exit_body=ex):
             return f"while({_canon_cond(c)}@{b.name},{_canon_stmt(bd)},{_canon_stmt(ex)})"
-        case SpawnStmt(body=body, fresh=fresh, bindings=bindings, owner=owner, retain=retain):
+        case SpawnStmt(body=body, fresh=fresh, owner=owner, retain=retain):
             fields = ",".join(f"{f.lifeline.name}.{f.name}" for f in fresh)
-            if bindings is None:
+            if owner is None:
                 return f"spawn({fields};{_canon_stmt(body)})"
             roles = ",".join(role.name for role in retain or ())
-            return f"spawn({fields};bind:{_canon_expr(bindings)}@{owner.name};retain:{roles};{_canon_stmt(body)})"
+            return f"spawn({fields};at:{owner.name};retain:{roles};{_canon_stmt(body)})"
         case ParallelStmt(branches=branches):
             return "par(" + "|".join(_canon_stmt(b) for b in branches) + ")"
         case _:
@@ -642,10 +642,9 @@ class ParallelStmt:
 
 @dataclass(frozen=True)
 class SpawnStmt:
-    """Detached session over existing participants. Selected cells copy at fork."""
+    """Detached child session, inherited or owner-allocated with fresh roles."""
     body: AnyStmt
     fresh: tuple[Field, ...] = ()
-    bindings: Expr | None = None
     owner: Lifeline | None = None
     retain: tuple[Lifeline, ...] | None = None
 
@@ -657,17 +656,15 @@ class SpawnStmt:
         roles = participation_set(self.body)
         if any(field.lifeline not in roles for field in self.fresh):
             raise ValueError("spawn fresh selects a participant absent from its body")
-        if self.bindings is None:
-            if self.owner is not None:
-                raise ValueError("spawn binding owner requires bindings")
-            if self.retain is not None and frozenset(self.retain) != roles:
+        if self.owner is None:
+            if self.retain is not None and (
+                len(set(self.retain)) != len(self.retain)
+                or frozenset(self.retain) != roles
+            ):
                 raise ValueError("inherited spawn retains every child role")
         else:
-            if not isinstance(self.bindings, (VarExpr, LitExpr)) or self.owner is None:
-                raise TypeError("bound spawn requires a binding value and owner")
-            if (self.bindings.var.type if isinstance(self.bindings, VarExpr)
-                    else self.bindings.type) is not Json:
-                raise TypeError("spawn bindings must be a Json role-to-endpoint map")
+            if not isinstance(self.owner, Lifeline):
+                raise TypeError("spawn at must name a Lifeline")
             if self.retain is None:
                 object.__setattr__(self, "retain", ())
             if len(set(self.retain)) != len(self.retain) or not set(self.retain) <= roles:
@@ -686,11 +683,10 @@ class ForkStmt:
 
 
 @dataclass(frozen=True)
-class BoundSelectStmt:
-    """Owner records the binding and one child visit before initialization."""
+class AllocateSessionStmt:
+    """Owner records one child visit and allocates fresh endpoints."""
     owner: Lifeline
     site: str
-    bindings: Expr
     interface: tuple[Lifeline, ...]
     retain: tuple[Lifeline, ...]
     template: str
@@ -851,7 +847,7 @@ class ParallelLocalStmt:
 LocalStmt = Union[
     EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelLocalStmt, ForkStmt,
-    BoundSelectStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
+    AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
 ]
 
 # Union covering both global (Stmt) and local (LocalStmt) programs.
@@ -860,7 +856,7 @@ LocalStmt = Union[
 AnyStmt = Union[
     EmptyStmt, MsgStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelStmt, ParallelLocalStmt, SpawnStmt, ForkStmt,
-    BoundSelectStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
+    AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
 ]
 
 
@@ -903,7 +899,7 @@ def _ordered_workflow_lifelines(wf: "Workflow") -> tuple[Lifeline, ...]:
 
 
 def _all_workflow_lifelines(wf: "Workflow") -> tuple[Lifeline, ...]:
-    """Every static role, including roles recruited only inside templates."""
+    """Every static role, including roles allocated only inside templates."""
 
     root = list(_ordered_workflow_lifelines(wf))
     seen = set(root)
@@ -1140,15 +1136,15 @@ def _participation_set(
             return frozenset({b}) | _participants(p1, memo) | _participants(p2, memo)
         case WhileStmt(owner=b, body=p, exit_body=q):
             return frozenset({b}) | _participants(p, memo) | _participants(q, memo)
-        case SpawnStmt(body=body, bindings=bindings, owner=owner, retain=retain):
-            if bindings is not None:
+        case SpawnStmt(body=body, owner=owner, retain=retain):
+            if owner is not None:
                 return frozenset(retain or ()) | frozenset({owner})
             return _participants(body, memo)
         case ForkStmt(body=body):
             return _participants(body, memo)
         case BoundForkStmt(role=role):
             return frozenset({role})
-        case BoundSelectStmt(owner=owner) | BoundSendStmt(owner=owner):
+        case AllocateSessionStmt(owner=owner) | BoundSendStmt(owner=owner):
             return frozenset({owner})
         case BoundReceiveStmt(role=role):
             return frozenset({role})
@@ -1201,12 +1197,12 @@ def occurring_variable_declarations(stmt: AnyStmt) -> frozenset[Var]:
             return occurring_variable_declarations(p1) | occurring_variable_declarations(p2)
         case WhileStmt(body=p, exit_body=q):
             return occurring_variable_declarations(p) | occurring_variable_declarations(q)
-        case SpawnStmt(body=body, bindings=bindings):
-            return occurring_variable_declarations(body) | _variables((bindings,))
+        case SpawnStmt(body=body):
+            return occurring_variable_declarations(body)
         case ForkStmt(body=body) | BoundForkStmt(body=body):
             return occurring_variable_declarations(body)
-        case BoundSelectStmt(bindings=bindings):
-            return _variables((bindings,))
+        case AllocateSessionStmt():
+            return frozenset()
         case BoundSendStmt() | BoundReceiveStmt():
             return frozenset()
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
@@ -1318,20 +1314,19 @@ def pp(node: AnyStmt, indent: int = 0) -> str:
                 f"{pad}exit:",
                 pp(exit_b, indent + 1),
             ])
-        case SpawnStmt(body=body, fresh=fresh, bindings=bindings, owner=owner, retain=retain):
+        case SpawnStmt(body=body, fresh=fresh, owner=owner, retain=retain):
             fields = ", ".join(f"{f.lifeline.name}.{f.name}" for f in fresh)
             details = f"fresh=({fields})"
-            if bindings is not None:
+            if owner is not None:
                 retained = ", ".join(role.name for role in retain or ())
-                details += f", bindings={bindings!r} @{owner.name}, retain=({retained})"
+                details += f", at={owner.name}, retain=({retained})"
             return f"{pad}spawn {details}:\n" + pp(body, indent + 1)
         case ForkStmt(body=body, site=site, fresh=fresh):
             return f"{pad}fork {site} fresh={fresh}:\n" + pp(body, indent + 1)
-        case BoundSelectStmt(owner=owner, site=site, bindings=bindings, interface=interface,
-                             retain=retain):
+        case AllocateSessionStmt(owner=owner, site=site, interface=interface, retain=retain):
             roles = ", ".join(role.name for role in interface)
             kept = ", ".join(role.name for role in retain)
-            return f"{pad}bind {site} {bindings!r} @{owner.name} interface=({roles}) retain=({kept})"
+            return f"{pad}allocate {site} @{owner.name} interface=({roles}) retain=({kept})"
         case BoundSendStmt(owner=owner, site=site, recipient=recipient, kind=kind):
             return f"{pad}{kind} {site} {owner.name} → {recipient.name}"
         case BoundReceiveStmt(role=role, site=site, owner=owner):

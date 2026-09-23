@@ -54,6 +54,20 @@ class InProcessChannel:
         self._lock = threading.Lock()
         self._init_inflight = 0
         self._activity_generation = 0
+        self._spawn_instances: dict[str, dict] = {}
+
+    def register_spawn_instance(self, descriptor: dict) -> None:
+        with self._lock:
+            child = descriptor["child"]
+            existing = self._spawn_instances.get(child)
+            if existing is not None and existing != descriptor:
+                raise ValueError(f"Conflicting descriptor for child {child!r}")
+            self._spawn_instances[child] = descriptor
+            self._activity_generation += 1
+
+    def spawn_instances(self) -> tuple[dict, ...]:
+        with self._lock:
+            return tuple(self._spawn_instances.values())
 
     def _queue(self, key: tuple[str, str, str]) -> _SeqQueue:
         """Atomically get-or-create the queue for a key.

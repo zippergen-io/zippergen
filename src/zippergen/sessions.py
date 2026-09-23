@@ -8,14 +8,17 @@ The complete state is encoded in the existing role-state transaction.
 from __future__ import annotations
 
 import copy
+import base64
+import binascii
+import json
 import re
-from collections.abc import Mapping, MutableMapping
+from collections.abc import MutableMapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, cast
 
 from zippergen.locator import _children
 from zippergen.syntax import (
-    EmptyStmt, ForkStmt, BoundSelectStmt, BoundSendStmt, BoundReceiveStmt,
+    EmptyStmt, ForkStmt, AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt,
     BoundForkStmt, IfRecvStmt, WhileRecvStmt, LocalStmt, VarExpr,
 )
 from zippergen.value_codec import encode_value, decode_value
@@ -25,55 +28,42 @@ if TYPE_CHECKING:
 
 
 def has_forks(stmt) -> bool:
-    return isinstance(stmt, (ForkStmt, BoundSelectStmt, BoundSendStmt,
+    return isinstance(stmt, (ForkStmt, AllocateSessionStmt, BoundSendStmt,
                              BoundReceiveStmt, BoundForkStmt)) or any(
                                  has_forks(c) for c in _children(stmt))
 
 
 _ENDPOINT = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}\Z")
+_FRESH_PREFIX = "~spawn:"
+
+
+def fresh_endpoint(child: str, role: str) -> str:
+    """Injective internal address, disjoint from the root-role namespace."""
+    payload = json.dumps([child, role], separators=(",", ":"), ensure_ascii=False)
+    return _FRESH_PREFIX + base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+def validate_root_endpoint(endpoint: str) -> str:
+    if not isinstance(endpoint, str) or endpoint.startswith(_FRESH_PREFIX):
+        raise ValueError(f"Root role name {endpoint!r} uses the reserved fresh endpoint namespace")
+    return validate_endpoint(endpoint)
 
 
 def validate_endpoint(endpoint: object) -> str:
+    if isinstance(endpoint, str) and endpoint.startswith(_FRESH_PREFIX):
+        try:
+            encoded = endpoint[len(_FRESH_PREFIX):]
+            values = json.loads(base64.urlsafe_b64decode(
+                encoded + "=" * (-len(encoded) % 4)).decode())
+            if (isinstance(values, list) and len(values) == 2
+                    and all(isinstance(value, str) for value in values)
+                    and fresh_endpoint(*values) == endpoint):
+                return endpoint
+        except (ValueError, UnicodeDecodeError, binascii.Error):
+            pass
     if not isinstance(endpoint, str) or not _ENDPOINT.fullmatch(endpoint):
         raise ValueError(f"Invalid endpoint identifier {endpoint!r}")
     return endpoint
-
-
-def resolve_endpoint_backends(endpoint, registered, overrides, defaults):
-    """Resolve managed backend callbacks by physical endpoint identity."""
-    if overrides is None:
-        return defaults
-    unknown = set(overrides) - set(registered)
-    if unknown:
-        raise ValueError(f"Backend configuration names unregistered endpoints: {sorted(unknown)}")
-    settings = overrides.get(endpoint, {})
-    if not isinstance(settings, Mapping):
-        raise TypeError("Endpoint backend settings must be dictionaries")
-    allowed = {"llm", "human", "assistant"}
-    if set(settings) - allowed:
-        raise ValueError(f"Unknown endpoint backend settings: {sorted(set(settings) - allowed)}")
-    return (settings.get("llm", defaults[0]),
-            settings.get("human", defaults[1]),
-            settings.get("assistant", defaults[2]))
-
-
-def _binding(value: object, interface, retain, parent: "Session",
-             available_endpoints: set[str]) -> dict[str, str]:
-    if not isinstance(value, dict):
-        raise ValueError("Spawn bindings must be a role-to-endpoint dictionary")
-    roles = {role.name for role in interface}
-    if set(value) != roles or any(not isinstance(key, str) for key in value):
-        raise ValueError(f"Spawn bindings require exactly these role keys: {sorted(roles)}")
-    result = {role: validate_endpoint(endpoint) for role, endpoint in value.items()}
-    if len(set(result.values())) != len(result):
-        raise ValueError("Spawn bindings must be injective within the child session")
-    for role in retain:
-        if result[role.name] != parent.role_endpoints[role.name]:
-            raise ValueError(f"Retained role {role.name!r} must preserve its endpoint")
-    for endpoint in result.values():
-        if endpoint not in available_endpoints:
-            raise ValueError(f"Endpoint {endpoint!r} is not registered")
-    return result
 
 
 def _control_names(stmt) -> set[str]:
@@ -165,6 +155,8 @@ class ScopedChannel:
         if conn is not None:
             from zippergen.store import record_spawn_instance
             record_spawn_instance(conn, descriptor["child"], descriptor)
+        else:
+            self.channel.register_spawn_instance(descriptor)
 
     def _activate(self, descriptor, role):
         conn = getattr(self.channel, "conn", None)
@@ -182,17 +174,22 @@ class ScopedChannel:
         self.state.activations[key] = descriptor
         return True
 
-    def select(self, stmt, env):
-        from zippergen.runtime import _eval
+    def allocate(self, stmt):
         parent = self.session
         visit = parent.visits.get(stmt.site, 0) + 1
         child = f"{parent.name}/{stmt.site}:{visit}"
-        role_endpoints = _binding(_eval(stmt.bindings, env), stmt.interface, stmt.retain,
-                                  parent, self.state.available_endpoints)
+        retained = {role.name for role in stmt.retain}
+        role_endpoints = {
+            role.name: (parent.role_endpoints[role.name] if role.name in retained
+                        else fresh_endpoint(child, role.name))
+            for role in stmt.interface
+        }
+        if len(set(role_endpoints.values())) != len(role_endpoints):
+            raise ValueError("Fresh endpoint allocation collided with a retained address")
         descriptor = {"child": child, "parent": parent.name, "site": stmt.site,
                       "template": stmt.template, "owner": stmt.owner.name,
                       "bindings": role_endpoints,
-                      "retain": sorted(role.name for role in stmt.retain)}
+                      "retain": sorted(retained)}
         self._record(descriptor)
         self.state.creations[child] = descriptor
         parent.visits[stmt.site] = visit
@@ -307,7 +304,6 @@ class SessionState:
     pending_session: str | None = None
     dirty: bool = False
     endpoint: str | None = None
-    available_endpoints: set[str] = field(default_factory=set)
     templates: dict = field(default_factory=dict, repr=False)
     creations: dict[str, dict] = field(default_factory=dict)
     activations: dict[tuple[str, str], dict] = field(default_factory=dict)
@@ -316,7 +312,7 @@ class SessionState:
     invite_turn: bool = True
 
     @classmethod
-    def start(cls, root, *, role=None, endpoint=None, endpoints=None, templates=None,
+    def start(cls, root, *, role=None, endpoint=None, templates=None,
               root_bindings=None, keep_alive=False):
         bound = templates is not None
         sessions = {} if role is None else {
@@ -325,8 +321,8 @@ class SessionState:
         }
         if role is None and not bound:
             sessions = {"0": Session("0", root)}
-        return cls(sessions, endpoint=endpoint, available_endpoints=set(endpoints or ()),
-                   templates=templates or {}, bound=bound, keep_alive=keep_alive)
+        return cls(sessions, endpoint=endpoint, templates=templates or {},
+                   bound=bound, keep_alive=keep_alive)
 
     @property
     def done(self):
@@ -359,10 +355,10 @@ class SessionState:
             raise ValueError("Bound-spawn descriptor has invalid retained roles")
         if retained != (role in descriptor.get("retain", ())):
             raise ValueError("Bound-spawn retention disagrees with descriptor")
-        for endpoint in binding.values():
+        for member, endpoint in binding.items():
             validate_endpoint(endpoint)
-            if endpoint not in self.available_endpoints:
-                raise ValueError(f"Endpoint {endpoint!r} is not registered")
+            if member not in descriptor["retain"] and endpoint != fresh_endpoint(child, member):
+                raise ValueError("Fresh role has an inconsistent endpoint identity")
 
     def accept_invitation(self, channel):
         if not self.bound or self.endpoint is None:
@@ -521,7 +517,7 @@ class SessionState:
 
     @classmethod
     def decode(cls, root, data, *, templates=None, endpoint=None,
-               endpoints=None, root_bindings=None, keep_alive=False):
+               root_bindings=None, keep_alive=False):
         from zippergen.control import decode_control, ControlError
         if data.get("v") == 2:
             if templates is None or endpoint != data.get("endpoint"):
@@ -560,7 +556,7 @@ class SessionState:
                            for entry in data.get("activations", ())}
             creations = {d["child"]: d for d in data.get("creations", ())}
             return cls(sessions, cells, data["cursor"], endpoint=endpoint,
-                       available_endpoints=set(endpoints or ()), templates=templates,
+                       templates=templates,
                        creations=creations, activations=activations,
                        bound=True, keep_alive=keep_alive,
                        invite_turn=bool(data.get("invite_turn", True)))

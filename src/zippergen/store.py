@@ -629,6 +629,12 @@ def load_spawn_instance(conn, child_id: str) -> dict | None:
     return None if row is None else json.loads(row[0])
 
 
+def list_spawn_instances(conn) -> list[dict]:
+    return [json.loads(row[0]) for row in conn.execute(
+        "SELECT descriptor FROM spawn_instances ORDER BY child_id"
+    ).fetchall()]
+
+
 def record_spawn_activation(conn, child_id: str, role: str, endpoint: str) -> bool:
     """Return whether this is the first installation of a child role."""
     row = conn.execute(

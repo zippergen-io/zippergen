@@ -36,7 +36,7 @@ from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     ParallelStmt, ParallelLocalStmt, SpawnStmt, ForkStmt,
-    BoundSelectStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
+    AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
     VarExpr, LitExpr, Var, Json,
     LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
@@ -652,10 +652,10 @@ def _step(
                        "fresh": list(stmt.fresh)})
             return EmptyStmt(), True
 
-        case BoundSelectStmt():
+        case AllocateSessionStmt():
             if not isinstance(ch, ScopedChannel):
                 raise RuntimeError("Bound spawn requires an endpoint session scheduler")
-            descriptor = ch.select(stmt, env)
+            descriptor = ch.allocate(stmt)
             if trace:
                 trace({"type": "bind", "lifeline": stmt.owner.name,
                        "site": stmt.site, "child_session": descriptor["child"],
@@ -1433,15 +1433,14 @@ def _build_formula_monitors(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def _run_bound(wf, lifelines, initial_envs, templates, endpoints,
-               llm_backend, human_backend, assistant_backend, trace, timeout,
-               endpoint_backends=None):
-    from zippergen.sessions import validate_endpoint, resolve_endpoint_backends
+def _run_fresh(wf, lifelines, initial_envs, templates,
+               llm_backend, human_backend, assistant_backend, trace, timeout):
+    from zippergen.sessions import validate_root_endpoint
     from zippergen.sqlite_runner import _default_env, _workflow_result
 
     roots = {role.name: project(wf, role) for role in lifelines}
-    root_bindings = {role.name: role.name for role in lifelines}
-    configured = {validate_endpoint(name) for name in endpoints} | set(root_bindings.values())
+    root_bindings = {role.name: validate_root_endpoint(role.name) for role in lifelines}
+    configured = set(root_bindings.values())
     channels = InProcessChannel()
     stop = threading.Event()
     finished = threading.Event()
@@ -1454,14 +1453,8 @@ def _run_bound(wf, lifelines, initial_envs, templates, endpoints,
         dispatcher = _MainThreadHumanDispatcher(human_backend, stop)
         human_backend = dispatcher.worker_backend
 
-    def worker(endpoint):
+    def worker(endpoint, static_role):
         try:
-            local_llm, local_human, local_assistant = resolve_endpoint_backends(
-                endpoint, configured, endpoint_backends,
-                (llm_backend, human_backend, assistant_backend),
-            )
-            if getattr(local_human, "requires_main_thread", False):
-                raise ValueError("Endpoint-specific main-thread human backends are not supported")
             role = endpoint if endpoint in roots else None
             env = _default_env(wf) if role is not None else {}
             if role is not None:
@@ -1477,7 +1470,7 @@ def _run_bound(wf, lifelines, initial_envs, templates, endpoints,
                         )
             root = roots.get(endpoint, EmptyStmt())
             state = SessionState.start(
-                root, role=role, endpoint=endpoint, endpoints=configured,
+                root, role=role, endpoint=endpoint,
                 root_bindings=root_bindings, templates=templates, keep_alive=True,
             )
             states[endpoint] = state
@@ -1485,8 +1478,8 @@ def _run_bound(wf, lifelines, initial_envs, templates, endpoints,
                 if stop.is_set():
                     raise WorkflowCancelled("Workflow cancelled")
                 _next, progressed = state.step(
-                    env, channels, wf.ns, local_llm, local_human, trace, stop,
-                    assistant_backend=local_assistant,
+                    env, channels, wf.ns, llm_backend, human_backend, trace, stop,
+                    assistant_backend=assistant_backend,
                 )
                 if not progressed:
                     finished.wait(0.01)
@@ -1495,16 +1488,26 @@ def _run_bound(wf, lifelines, initial_envs, templates, endpoints,
             results[endpoint] = exc
             stop.set()
 
-    for endpoint in sorted(configured):
-        thread = threading.Thread(target=worker, args=(endpoint,), name=endpoint, daemon=True)
+    def start_worker(endpoint, static_role):
+        thread = threading.Thread(target=worker, args=(endpoint, static_role),
+                                  name=static_role, daemon=True)
         threads.append(thread)
         thread.start()
+
+    for endpoint in sorted(configured):
+        start_worker(endpoint, endpoint)
 
     deadline = None if timeout <= 0 else time.monotonic() + timeout
     try:
         while not finished.is_set():
             if stop.is_set():
                 break
+            for descriptor in channels.spawn_instances():
+                for role, endpoint in descriptor["bindings"].items():
+                    if role in descriptor["retain"] or endpoint in configured:
+                        continue
+                    configured.add(endpoint)
+                    start_worker(endpoint, role)
             generation = channels.activity_generation()
             quiet = (len(states) == len(configured)
                      and all(state.done for state in states.values())
@@ -1543,8 +1546,6 @@ def run(
     verbose: bool = False,
     trace=None,
     timeout: float = 60.0,
-    endpoints=None,
-    endpoint_backends=None,
 ) -> object:
     """
     Project ``wf`` onto every lifeline and run all of them concurrently.
@@ -1584,10 +1585,10 @@ def run(
         trace = console_trace
 
     templates = project_templates(wf)
-    if any(t.template.startswith("bound-v1:") for t in templates.values()):
-        return _run_bound(wf, lifelines, initial_envs, templates,
-                          set(endpoints or ()), llm_backend, human_backend,
-                          assistant_backend, trace, timeout, endpoint_backends)
+    if any(t.template.startswith("fresh-v1:") for t in templates.values()):
+        return _run_fresh(wf, lifelines, initial_envs, templates,
+                          llm_backend, human_backend, assistant_backend,
+                          trace, timeout)
 
     stop = threading.Event()
     human_dispatcher = None

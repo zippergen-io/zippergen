@@ -2,13 +2,12 @@
 
 ## Unreleased
 
-- Experimental bound spawn selects concrete endpoints at runtime while keeping
-  role projections static: `spawn(Review, bindings=bindings @ Manager,
-  retain=(Manager, IT), fresh="all")`. Retained roles fork locally; recruited
-  roles activate from durable invitations with uninitialized private cells.
-  The Python runners accept an endpoint registry and optional endpoint-specific
-  backends. Global/local views, validation, and semantic snapshots include the
-  binding and retention choices. See [dynamic role bindings](docs/experimental-spawn.md#dynamic-role-bindings).
+- Experimental fresh-participant spawn allocates endpoints while keeping role
+  projections static: `spawn(Onboarding, at=HR, retain=(HR,), fresh="all")`.
+  Retained roles fork locally; other roles start on newly created endpoints
+  with uninitialized cells. The earlier arbitrary `bindings=`/endpoint-registry
+  API is removed. Global/local views and snapshots expose allocation choices.
+  See [fresh participants](docs/experimental-spawn.md#fresh-participants).
 - Durable stores upgrade from schema 4 to 5 by adding spawn creation and
   activation ledgers transactionally. Existing workflow state is preserved;
   read-only inspection leaves schema-4 stores unchanged.

@@ -128,7 +128,6 @@ class RoleRunner:
         stop: threading.Event | None = None,
         root_role: str | None = None,
         root_bindings: dict[str, str] | None = None,
-        endpoints: set[str] | None = None,
         templates: dict | None = None,
         completion: threading.Event | None = None,
     ) -> None:
@@ -153,7 +152,6 @@ class RoleRunner:
         self.stop = stop
         self.root_role = root_role
         self.root_bindings = root_bindings
-        self.endpoints = endpoints
         self.templates = templates
         self.completion = completion
         self.node_paths = statement_node_paths(local_stmt)
@@ -182,7 +180,7 @@ class RoleRunner:
         seeded = dict(env)
         initial = (SessionState.start(
             self.local_stmt, role=self.root_role, endpoint=self.role,
-            root_bindings=self.root_bindings, endpoints=self.endpoints,
+            root_bindings=self.root_bindings,
             templates=self.templates, keep_alive=self.completion is not None,
         ) if self.templates is not None or has_forks(self.local_stmt) else self.local_stmt)
         _begin_immediate(self.conn, self.stop)
@@ -215,7 +213,7 @@ class RoleRunner:
         self.steps = state["steps"]
         return dict(state["env"]), decode_control(
             self.local_stmt, state["control"], templates=self.templates,
-            endpoint=self.role, endpoints=self.endpoints,
+            endpoint=self.role,
             root_bindings=self.root_bindings,
             keep_alive=self.completion is not None,
         )
@@ -405,7 +403,7 @@ class RoleRunner:
             input_hash = _input_hash(inputs)
             task_id = human_task_id(self.role, path, input_hash, [session.name, session.steps])
             task, _ = ensure_human_task(
-                self.conn, task_id=task_id, role=self.role, locator=path,
+                self.conn, task_id=task_id, role=session.role or self.role, locator=path,
                 action=action.name, input_hash=input_hash, inputs=inputs,
                 spec=build_human_task_spec(action, inputs),
             )
@@ -413,7 +411,7 @@ class RoleRunner:
             session.waiting[key] = waiting
             channel.state.dirty = True
             if trace:
-                trace({"type": "act_start", "lifeline": session.role,
+                trace({"type": "act_start", "lifeline": session.role or self.role,
                        "endpoint": self.role,
                        "action": action.name, "action_kind": "human",
                        "inputs": _jsonify(inputs), "seq": waiting["seq"],
@@ -428,7 +426,7 @@ class RoleRunner:
         outputs = {node.outputs[0].name: answer[action.output]}
         del session.waiting[key]
         if trace:
-            trace({"type": "act", "lifeline": session.role,
+            trace({"type": "act", "lifeline": session.role or self.role,
                    "endpoint": self.role, "action": action.name,
                    "action_kind": "human", "inputs": _jsonify(waiting["inputs"]),
                    "outputs": _jsonify(outputs), "seq": waiting["seq"],

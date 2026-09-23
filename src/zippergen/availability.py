@@ -221,16 +221,13 @@ def _check_statement(
             _check_statement(exit_body, exit_state, known_variables)
             state.replace_with(exit_state)
 
-        case SpawnStmt(body=body, bindings=bindings, owner=owner, retain=retain):
+        case SpawnStmt(body=body, owner=owner, retain=retain):
             # Child writes establish nothing for the continuing parent.
-            if bindings is not None and isinstance(bindings, VarExpr):
-                state.require(owner.name, bindings.var.name,
-                              f"spawn binding on {owner.name!r}")
             child_state = state.copy()
-            if bindings is not None:
-                recruited = participation_set(body) - frozenset(retain or ())
-                for role in recruited:
-                    # Recruitment starts with newly allocated, uninitialized
+            if owner is not None:
+                allocated = participation_set(body) - frozenset(retain or ())
+                for role in allocated:
+                    # A fresh endpoint starts with newly allocated, uninitialized
                     # protocol fields, even when this endpoint has defaults or
                     # a parent role of the same name.
                     child_state.scopes[role.name] = set()

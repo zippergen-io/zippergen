@@ -33,7 +33,7 @@ from zippergen.syntax import (
     WhileStmt,
     Workflow,
     _ordered_workflow_lifelines,
-    _all_workflow_lifelines,
+    participation_set, _all_workflow_lifelines,
 )
 
 
@@ -296,14 +296,16 @@ def workflow_semantics(
         if isinstance(stmt, SpawnStmt):
             fresh = sorted(f"{f.lifeline.name}.{f.name}" for f in stmt.fresh)
             if stmt.owner is not None:
-                binding = {"owner": stmt.owner.name, "expression": _expr(stmt.bindings)}
                 retain = sorted(role.name for role in stmt.retain or ())
+                allocate = sorted(role.name for role in participation_set(stmt.body)
+                                  if role.name not in retain)
                 regions.append({"kind": "spawn", "fresh": fresh,
-                                "binding": binding, "retain": retain,
-                                "context": list(context)})
-                marker = f"spawn:{stmt.owner.name}:{binding['expression']}:{','.join(retain)}"
-                return {"node": "spawn", "fresh": fresh, "binding": binding,
-                        "retain": retain, "body": walk(stmt.body, (*context, marker))}
+                                "initiator": stmt.owner.name, "retain": retain,
+                                "allocate": allocate, "context": list(context)})
+                marker = f"spawn:{stmt.owner.name}:{','.join(retain)}"
+                return {"node": "spawn", "fresh": fresh, "initiator": stmt.owner.name,
+                        "retain": retain, "allocate": allocate,
+                        "body": walk(stmt.body, (*context, marker))}
             regions.append({"kind": "spawn", "fresh": fresh, "context": list(context)})
             return {"node": "spawn", "fresh": fresh,
                     "body": walk(stmt.body, (*context, "spawn:" + ",".join(fresh)))}
@@ -347,7 +349,7 @@ def workflow_semantics(
         "skips": skips,
         "protocol": protocol,
     }
-    if any("binding" in region for region in regions):
+    if any("initiator" in region for region in regions):
         result["root_lifelines"] = [
             role.name for role in _ordered_workflow_lifelines(workflow)
         ]

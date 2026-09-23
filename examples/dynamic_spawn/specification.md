@@ -1,35 +1,37 @@
-# Dynamically assigned access reviews
+# Onboarding with fresh Employee endpoints
 
-Manager dispatches two requests without waiting for either review to finish.
-Each request creates an AccessReview session. Manager and IT retain their
-endpoints, while Reviewer is assigned to reviewer-east or reviewer-west using
-a complete Manager-owned binding. These reviewer endpoints have no program in
-the parent session. All endpoints are hosted by the existing local runtime;
-this example does not demonstrate remote deployment.
+HR receives two hires, Alice and Bob. For each arrival it starts the statically
+compiled Onboarding protocol. HR retains its existing endpoint; spawn allocates
+a distinct new endpoint for Employee and starts that role's local program.
+The intake loop and both child HR programs share the original HR endpoint.
+There is no join in the parent and no global activation barrier.
 
-At each retained role's local fork, fresh-all copies its child-relevant fields.
-Reviewer starts with uninitialized child-local protocol fields and learns the
-request through Manager's message. Reviewer owns the approval choice and sends
-the generated decision to the child roles that need it. IT provisions only the
-approved request. The fake policy approves read:alpha and rejects write:beta.
-The actions are deterministic local functions with no external services.
+Before changing the intake variable for the next arrival, HR copies `hire`
+into a child-local cell at its own fork. Each Employee endpoint starts with
+uninitialized protocol fields. HR's message initializes Employee.details;
+Employee's confirmation action initializes Employee.response. The response
+returns explicitly to HR in the same session. HR.confirmation is also fresh
+so concurrent replies do not overwrite one another's cells.
 
-The two visits to the same spawn site must create distinct sessions, isolate
-request/decision state, preserve the selected reviewers, and let the parent
-continue. Parent completion does not stop children. The runner returns only
-after outstanding child work finishes. The returned integer counts dispatches,
-not approvals or child results; no implicit return channel is provided.
+This example uses deterministic stand-ins for an arrival source and human
+confirmation. Creating an endpoint creates a local execution worker, not a
+person, account, credential or machine. A production connector would deliver
+the question to the person identified by the received hire data.
+
+Two arrivals must produce distinct session and Employee endpoint identities,
+correctly correlated replies, and isolated hire inputs. The parent may finish
+before the children. The runner returns after all sessions finish. Its return
+value counts dispatched hires, not successful human approvals.
 
 Run from the repository root:
 
 ```sh
 python examples/dynamic_spawn/workflow.py
-zg validate examples/dynamic_spawn/workflow.py:access_reviews
-zg show examples/dynamic_spawn/workflow.py:access_reviews
-zg show --agent Reviewer examples/dynamic_spawn/workflow.py:access_reviews
+zg validate examples/dynamic_spawn/workflow.py:onboard_employees
+zg show --communications examples/dynamic_spawn/workflow.py:onboard_employees
+zg show --agent Employee examples/dynamic_spawn/workflow.py:onboard_employees
 ```
 
-The reviewer endpoint names are explicit demo configuration passed to the
-runner. Production selection would use configured endpoints and a separately
-implemented discovery action; it would retain that action's ordinary effect
-replay guarantees.
+No endpoint registry or binding value is supplied by the application. The
+runtime allocates and records fresh identities, installs the static role
+templates, and recovers them from the durable store after a restart.

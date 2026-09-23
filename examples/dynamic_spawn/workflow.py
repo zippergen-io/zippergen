@@ -1,39 +1,26 @@
-"""Two independent access reviews with reviewers selected at runtime.
+"""Onboard Alice and Bob using fresh Employee endpoints.
 
-Run this file directly for a temporary SQLite-backed demonstration. All actions
-are local fakes; there are no credentials, models or external side effects.
+The arrival and confirmation actions are local fakes. Run directly for a
+SQLite-backed demonstration without credentials or external side effects.
 """
-from zippergen import Json, Lifeline, Var, fragment, pure, run_sqlite, spawn, workflow
+from zippergen import Lifeline, Var, fragment, pure, run_sqlite, spawn, workflow
 
-Manager, Reviewer, IT = (Lifeline(name) for name in ("Manager", "Reviewer", "IT"))
+HR, Employee = Lifeline("HR"), Lifeline("Employee")
 index = Var("index", int, default=0)
-request = Var("request", str)
-approved = Var("approved", bool)
-receipt = Var("receipt", str)
+hire = Var("hire", str)
+details = Var("details", str)
+response = Var("response", str)
+confirmation = Var("confirmation", str)
 
 
 @pure
-def next_request(index: int) -> str:
-    return ("read:alpha", "write:beta")[index]
+def next_hire(index: int) -> str:
+    return ("Alice", "Bob")[index]
 
 
 @pure
-def select_reviewer(index: int) -> Json:
-    return {
-        "Manager": "Manager",
-        "Reviewer": ("reviewer-east", "reviewer-west")[index],
-        "IT": "IT",
-    }
-
-
-@pure
-def assess(request: str) -> bool:
-    return request.startswith("read:")
-
-
-@pure
-def provision(request: str) -> str:
-    return "provisioned:" + request
+def confirm(details: str) -> str:
+    return "Confirmed: " + details
 
 
 @pure
@@ -42,38 +29,34 @@ def advance(index: int) -> int:
 
 
 @fragment
-def AccessReview():
-    Manager(request) >> Reviewer(request)
-    Reviewer: approved = assess(request)
-    if approved @ Reviewer:
-        Reviewer(request) >> IT(request)
-        IT: receipt = provision(request)
+def Onboarding():
+    HR(hire) >> Employee(details)
+    Employee: response = confirm(details)
+    Employee(response) >> HR(confirmation)
 
 
 @workflow
-def access_reviews() -> int:
-    while (index < 2) @ Manager:
-        Manager: request = next_request(index)
-        Manager: bindings = select_reviewer(index)
+def onboard_employees() -> int:
+    while (index < 2) @ HR:
+        HR: hire = next_hire(index)
         spawn(
-            AccessReview,
-            bindings=bindings @ Manager,
-            retain=(Manager, IT),
-            fresh="all",
+            Onboarding,
+            at=HR,
+            retain=(HR,),
+            fresh=(HR.hire, HR.confirmation),
         )
-        Manager: index = advance(index)
-    return index @ Manager
+        HR: index = advance(index)
+    return index @ HR
 
 
 if __name__ == "__main__":
     import tempfile
     from pathlib import Path
 
-    with tempfile.TemporaryDirectory(prefix="zippergen-access-review-") as directory:
+    with tempfile.TemporaryDirectory(prefix="zippergen-onboarding-") as directory:
         result = run_sqlite(
-            access_reviews,
+            onboard_employees,
             store_path=str(Path(directory) / "run.sqlite"),
-            endpoints={"reviewer-east", "reviewer-west"},
             verbose=True,
         )
-        print(f"Dispatched {result} reviews; all child sessions finished.")
+        print(f"Dispatched {result} hires; all onboarding sessions finished.")

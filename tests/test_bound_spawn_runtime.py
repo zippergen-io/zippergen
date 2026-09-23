@@ -1,20 +1,20 @@
-"""Managed endpoints execute bound child roles in memory and SQLite."""
+"""Fresh endpoint allocation, activation, and durable recovery."""
 
-import pytest
-import threading
-import time
 import subprocess
 import sys
+import threading
+import time
 
-from zippergen import Json, Lifeline, Var, fragment, pure, run, run_sqlite, spawn, workflow
+import pytest
+
+from zippergen import Lifeline, Var, fragment, pure, run, run_sqlite, spawn, workflow
+from zippergen.sessions import fresh_endpoint
 from zippergen.store import DurableChannel, load_spawn_instance, open_store
 
 
 A, B = Lifeline("A"), Lifeline("B")
-binding = Var("binding", Json)
 item = Var("item", int)
 answer = Var("answer", int)
-counter = Var("counter", int, default=0)
 
 
 @pure
@@ -27,11 +27,6 @@ def one() -> int:
     return 1
 
 
-@pure
-def increment(value: int) -> int:
-    return value + 1
-
-
 @fragment
 def child():
     A(item) >> B(item)
@@ -40,20 +35,8 @@ def child():
 
 
 @workflow
-def flow(binding: Json @ A, item: int @ A):
-    spawn(child, bindings=binding @ A, retain=(A,), fresh="all")
-
-
-@fragment
-def self_child():
-    A: answer = one()
-
-
-@workflow
-def busy_parent(binding: Json @ A):
-    spawn(self_child, bindings=binding @ A, retain=())
-    while (counter < 100) @ A:
-        A: counter = increment(counter)
+def flow(item: int @ A):
+    spawn(child, at=A, retain=(A,), fresh="all")
 
 
 @fragment
@@ -64,41 +47,46 @@ def inherited_grandchild():
 
 
 @workflow
-def recruit_then_inherit(binding: Json @ A):
-    spawn(inherited_grandchild, bindings=binding @ A, retain=())
+def recruit_then_inherit():
+    spawn(inherited_grandchild, at=A, retain=())
 
 
-@pytest.mark.parametrize("runner", [run, run_sqlite])
-def test_recruited_child_runs_at_configured_endpoint(runner, tmp_path):
-    events = []
-    kwargs = {"endpoints": {"worker"}, "initial_envs": {
-        "A": {"binding": {"A": "A", "B": "worker"}, "item": 7},
-    }, "trace": events.append}
-    if runner is run_sqlite:
-        kwargs["store_path"] = str(tmp_path / "state.sqlite")
-    else:
-        kwargs["lifelines"] = [A]
-    runner(flow, **kwargs)
-    assert any(event["type"] == "recv" and event["to"] == "A"
-               and event.get("session") != "0" for event in events)
-
-
-@pytest.mark.parametrize("runner", [run, run_sqlite])
-def test_bound_root_input_type_is_checked(runner, tmp_path):
-    kwargs = {"endpoints": {"worker"}, "initial_envs": {
-        "A": {"binding": {"A": "A", "B": "worker"}, "item": "bad"},
-    }}
+def _flow_args(runner, tmp_path, *, trace=None):
+    kwargs = {"initial_envs": {"A": {"item": 7}}, "timeout": 5}
+    if trace is not None:
+        kwargs["trace"] = trace
     if runner is run:
         kwargs["lifelines"] = [A]
     else:
-        kwargs["store_path"] = str(tmp_path / "invalid.sqlite")
+        kwargs["store_path"] = str(tmp_path / "state.sqlite")
+    return kwargs
+
+
+@pytest.mark.parametrize("runner", [run, run_sqlite])
+def test_fresh_child_runs_on_a_new_endpoint(runner, tmp_path):
+    events = []
+    runner(flow, **_flow_args(runner, tmp_path, trace=events.append))
+    creation = next(event for event in events if event["type"] == "bind")
+    child_id = creation["child_session"]
+    assert creation["bindings"] == {"A": "A", "B": fresh_endpoint(child_id, "B")}
+    assert any(event["type"] == "recv" and event["to"] == "A"
+               and event.get("session") == child_id for event in events)
+    assert any(event["type"] == "act" and event.get("lifeline") == "B"
+               and event.get("endpoint") == fresh_endpoint(child_id, "B")
+               for event in events)
+
+
+@pytest.mark.parametrize("runner", [run, run_sqlite])
+def test_fresh_root_input_type_is_checked(runner, tmp_path):
+    kwargs = _flow_args(runner, tmp_path)
+    kwargs["initial_envs"] = {"A": {"item": "bad"}}
     with pytest.raises((TypeError, ValueError, RuntimeError), match="item|input"):
         runner(flow, **kwargs)
 
 
-@pytest.mark.parametrize("phase", ["bind", "desc", "invite", "fork"])
-def test_durable_creation_resumes_from_committed_position(tmp_path, phase):
-    from examples.dynamic_spawn.workflow import access_reviews
+@pytest.mark.parametrize("phase", ["bind", "invite", "fork"])
+def test_durable_allocation_resumes_from_committed_position(tmp_path, phase):
+    from examples.dynamic_spawn.workflow import onboard_employees
 
     path = str(tmp_path / "state.sqlite")
     interrupted = False
@@ -107,37 +95,30 @@ def test_durable_creation_resumes_from_committed_position(tmp_path, phase):
         nonlocal interrupted
         if interrupted:
             return
-        if phase == "bind" and event["type"] == "bind":
-            interrupted = True
-        elif phase in {"desc", "invite"} and event["type"] == "init_send" \
-                and event["kind"] == phase:
-            interrupted = True
-        elif phase == "fork" and event["type"] == "fork" \
-                and event["lifeline"] == "IT":
-            interrupted = True
+        interrupted = (
+            phase == "bind" and event["type"] == "bind"
+            or phase == "invite" and event["type"] == "init_send"
+            and event["kind"] == "invite"
+            or phase == "fork" and event["type"] == "fork"
+            and event["lifeline"] == "HR"
+        )
         if interrupted:
             raise RuntimeError("simulated process loss before commit")
 
     with pytest.raises(RuntimeError, match="simulated process loss"):
-        run_sqlite(access_reviews, store_path=path,
-                   endpoints={"reviewer-east", "reviewer-west"}, trace=interrupt,
-                   timeout=5)
+        run_sqlite(onboard_employees, store_path=path, trace=interrupt, timeout=5)
     assert interrupted
-    events = []
-    assert run_sqlite(access_reviews, store_path=path,
-                      endpoints={"reviewer-east", "reviewer-west"},
-                      trace=events.append, timeout=5) == 2
+    assert run_sqlite(onboard_employees, store_path=path, timeout=5) == 2
     conn = open_store(path)
     try:
-        assert conn.execute("SELECT COUNT(*) FROM spawn_instances").fetchone()[0] == 2
-        assert conn.execute("SELECT COUNT(*) FROM spawn_activations").fetchone()[0] == 6
+        rows = conn.execute("SELECT descriptor FROM spawn_instances").fetchall()
+        assert len(rows) == 2
+        assert conn.execute("SELECT COUNT(*) FROM spawn_activations").fetchone()[0] == 4
     finally:
         conn.close()
-    assert sum(event["type"] == "fork" and event["lifeline"] == "IT"
-               for event in events) <= 2
 
 
-def test_in_memory_supervisor_waits_while_invitation_is_being_accepted(monkeypatch):
+def test_in_memory_completion_waits_during_invitation_acceptance(monkeypatch):
     from zippergen.channels import InProcessChannel
 
     picked = threading.Event()
@@ -145,19 +126,18 @@ def test_in_memory_supervisor_waits_while_invitation_is_being_accepted(monkeypat
     original = InProcessChannel.try_get_invitation
 
     def hold_after_dequeue(self, endpoint):
-        item = original(self, endpoint)
-        if item is not None:
+        invitation = original(self, endpoint)
+        if invitation is not None:
             picked.set()
             assert release.wait(2)
-        return item
+        return invitation
 
     monkeypatch.setattr(InProcessChannel, "try_get_invitation", hold_after_dequeue)
     outcome = []
 
     def execute():
         try:
-            run(flow, [A], {"A": {"binding": {"A": "A", "B": "worker"},
-                                  "item": 7}}, endpoints={"worker"}, timeout=4)
+            run(flow, [A], {"A": {"item": 7}}, timeout=4)
             outcome.append("done")
         except BaseException as exc:
             outcome.append(exc)
@@ -174,36 +154,18 @@ def test_in_memory_supervisor_waits_while_invitation_is_being_accepted(monkeypat
     assert outcome == ["done"]
 
 
-@pytest.mark.parametrize("runner", [run, run_sqlite])
-def test_invitation_is_serviced_before_busy_parent_finishes(runner, tmp_path):
-    events = []
-    kwargs = {"initial_envs": {"A": {"binding": {"A": "A"}}},
-              "trace": events.append, "timeout": 5}
-    if runner is run:
-        kwargs["lifelines"] = [A]
-    else:
-        kwargs["store_path"] = str(tmp_path / "busy.sqlite")
-    runner(busy_parent, **kwargs)
-    child = next(i for i, event in enumerate(events)
-                 if event["type"] == "act" and event.get("action") == "one")
-    final_parent = max(i for i, event in enumerate(events)
-                       if event["type"] == "act" and event.get("action") == "increment")
-    assert child < final_parent
-
-
-def test_durable_bound_spawn_resumes_in_fresh_process(tmp_path):
+def test_durable_allocation_resumes_in_fresh_process(tmp_path):
     path = str(tmp_path / "state.sqlite")
     code = """
 import sys
-from examples.dynamic_spawn.workflow import access_reviews
+from examples.dynamic_spawn.workflow import onboard_employees
 from zippergen import run_sqlite
 
 def interrupt(event):
     if event['type'] == 'init_send' and event['kind'] == 'invite':
         raise RuntimeError('injected crash')
 
-result = run_sqlite(access_reviews, store_path=sys.argv[1],
-                    endpoints={'reviewer-east', 'reviewer-west'},
+result = run_sqlite(onboard_employees, store_path=sys.argv[1],
                     trace=interrupt if sys.argv[2] == 'crash' else None,
                     timeout=5)
 assert result == 2
@@ -217,7 +179,7 @@ assert result == 2
     conn = open_store(path)
     try:
         assert conn.execute("SELECT COUNT(*) FROM spawn_instances").fetchone()[0] == 2
-        assert conn.execute("SELECT COUNT(*) FROM spawn_activations").fetchone()[0] == 6
+        assert conn.execute("SELECT COUNT(*) FROM spawn_activations").fetchone()[0] == 4
     finally:
         conn.close()
 
@@ -232,47 +194,51 @@ def test_active_inherited_grandchild_decodes_after_restart(tmp_path):
             raise RuntimeError("stop with active grandchild")
 
     with pytest.raises(RuntimeError, match="active grandchild"):
-        run_sqlite(recruit_then_inherit, store_path=path,
-                   initial_envs={"A": {"binding": {"B": "worker"}}},
-                   endpoints={"worker"}, trace=interrupt, timeout=5)
+        run_sqlite(recruit_then_inherit, store_path=path, trace=interrupt, timeout=5)
     conn = open_store(path)
     try:
-        state = load_role_state(conn, "worker")
+        descriptor = load_spawn_instance(conn, "0/0:1")
+        assert descriptor is not None
+        endpoint = descriptor["bindings"]["B"]
+        state = load_role_state(conn, endpoint)
         assert state is not None
-        controls = state["control"]["sessions"]
         assert any(entry["name"].count("/") == 2 and entry["template"]
-                   for entry in controls)
+                   for entry in state["control"]["sessions"])
     finally:
         conn.close()
-
     events = []
     run_sqlite(recruit_then_inherit, store_path=path,
-               initial_envs={"A": {"binding": {"B": "worker"}}},
-               endpoints={"worker"}, trace=events.append, timeout=5)
+               trace=events.append, timeout=5)
     assert any(event["type"] == "act" and event.get("action") == "double"
                and event.get("outputs", {}).get("answer") == 2
                for event in events)
 
 
-def test_stale_identical_invitation_is_acknowledged_without_reexecution(tmp_path):
+def _inject_invitation(path, descriptor):
+    endpoint = descriptor["bindings"]["B"]
+    conn = open_store(path)
+    try:
+        DurableChannel(conn, "A").put(
+            "A", endpoint, f"init:invite:{descriptor['child']}:B", (descriptor,),
+        )
+    finally:
+        conn.close()
+
+
+def test_stale_identical_invitation_is_acked_without_reexecution(tmp_path):
     path = str(tmp_path / "duplicate.sqlite")
-    supplied = {"A": {"binding": {"A": "A", "B": "worker"}, "item": 7}}
-    run_sqlite(flow, store_path=path, initial_envs=supplied,
-               endpoints={"worker"}, timeout=5)
+    run_sqlite(flow, store_path=path, initial_envs={"A": {"item": 7}}, timeout=5)
     conn = open_store(path)
     try:
         descriptor = load_spawn_instance(conn, "0/0:1")
         assert descriptor is not None
         before = conn.execute("SELECT COUNT(*) FROM spawn_activations").fetchone()[0]
-        DurableChannel(conn, "A").put(
-            "A", "worker", f"init:invite:{descriptor['child']}:B", (descriptor,),
-        )
     finally:
         conn.close()
-
+    _inject_invitation(path, descriptor)
     events = []
-    run_sqlite(flow, store_path=path, initial_envs=supplied,
-               endpoints={"worker"}, trace=events.append, timeout=5)
+    run_sqlite(flow, store_path=path, initial_envs={"A": {"item": 7}},
+               trace=events.append, timeout=5)
     assert not any(event["type"] in {"act", "recv", "fork"} for event in events)
     conn = open_store(path)
     try:
@@ -284,22 +250,16 @@ def test_stale_identical_invitation_is_acknowledged_without_reexecution(tmp_path
 
 def test_conflicting_stale_invitation_is_rejected(tmp_path):
     path = str(tmp_path / "conflict.sqlite")
-    supplied = {"A": {"binding": {"A": "A", "B": "worker"}, "item": 7}}
-    run_sqlite(flow, store_path=path, initial_envs=supplied,
-               endpoints={"worker"}, timeout=5)
+    run_sqlite(flow, store_path=path, initial_envs={"A": {"item": 7}}, timeout=5)
     conn = open_store(path)
     try:
         descriptor = load_spawn_instance(conn, "0/0:1")
         assert descriptor is not None
-        conflicting = {**descriptor, "template": "different-template"}
-        DurableChannel(conn, "A").put(
-            "A", "worker", f"init:invite:{descriptor['child']}:B", (conflicting,),
-        )
     finally:
         conn.close()
-    with pytest.raises(RuntimeError, match="[Ii]ncompatible .*bound-spawn template"):
-        run_sqlite(flow, store_path=path, initial_envs=supplied,
-                   endpoints={"worker"}, timeout=5)
+    _inject_invitation(path, {**descriptor, "template": "different-template"})
+    with pytest.raises(RuntimeError, match="[Ii]ncompatible .*spawn template"):
+        run_sqlite(flow, store_path=path, initial_envs={"A": {"item": 7}}, timeout=5)
 
 
 @pytest.mark.parametrize("conflict", [False, True])
@@ -319,12 +279,10 @@ def test_in_memory_duplicate_invitation_is_idempotent_or_rejected(monkeypatch, c
 
     monkeypatch.setattr(InProcessChannel, "put", duplicate)
     events = []
-    execute = lambda: run(
-        flow, [A], {"A": {"binding": {"A": "A", "B": "worker"}, "item": 7}},
-        endpoints={"worker"}, trace=events.append, timeout=5,
-    )
+    execute = lambda: run(flow, [A], {"A": {"item": 7}},
+                          trace=events.append, timeout=5)
     if conflict:
-        with pytest.raises(RuntimeError, match="[Ii]ncompatible .*bound-spawn template"):
+        with pytest.raises(RuntimeError, match="[Ii]ncompatible .*spawn template"):
             execute()
     else:
         execute()

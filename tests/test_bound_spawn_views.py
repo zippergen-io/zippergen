@@ -1,43 +1,44 @@
-"""Inspect role templates without inventing parent programs for recruits."""
-from examples.dynamic_spawn.workflow import access_reviews
+"""Inspect static role templates and fresh-participant allocation choices."""
+from examples.dynamic_spawn.workflow import onboard_employees
 from zippergen.semantic import workflow_semantics
 from zippergen.view import ViewOptions, render_workflow, workflow_view_data
 
 
-def test_global_view_keeps_bound_spawn_source_parameters():
-    code = render_workflow(access_reviews)
-    assert "bindings=bindings @ Manager" in code
-    assert "retain=(Manager, IT,)" in code
-    assert "Reviewer: approved = assess(request)" in code
+def test_global_view_keeps_allocation_source_parameters():
+    code = render_workflow(onboard_employees)
+    assert "at=HR" in code
+    assert "retain=(HR,)" in code
+    assert "Employee: response = confirm(details)" in code
+    assert "bindings=" not in code
     assert "send_descriptor" not in code
     assert "send_invitation" not in code
 
 
-def test_recruited_role_view_shows_its_child_and_no_parent_loop():
-    code = render_workflow(access_reviews, options=ViewOptions(agent="Reviewer"))
+def test_fresh_role_view_shows_its_child_and_no_parent_loop():
+    code = render_workflow(onboard_employees, options=ViewOptions(agent="Employee"))
     assert "no program in the initial session" in code
-    assert "@session_role('Reviewer'" in code
-    assert "request = recv('Manager')" in code
-    assert "send_decision('IT', True)" in code
+    assert "@session_role('Employee'" in code
+    assert "fresh endpoint" in code
+    assert "details = recv('HR')" in code
+    assert "send('HR', response)" in code
     assert "while" not in code
-    data = workflow_view_data(access_reviews, options=ViewOptions(agent="Reviewer"))
-    assert set(data["lifelines"]) == {"Manager", "Reviewer", "IT"}
+    data = workflow_view_data(onboard_employees, options=ViewOptions(agent="Employee"))
+    assert set(data["lifelines"]) == {"HR", "Employee"}
 
 
-def test_bound_owner_and_retained_local_views_show_creation_order():
-    manager = render_workflow(access_reviews, options=ViewOptions(agent="Manager"))
-    assert manager.index("select_binding(") < manager.index("send_descriptor(")
-    assert manager.index("send_invitation(") < manager.index("with fork_session(")
-    it = render_workflow(access_reviews, options=ViewOptions(agent="IT"))
-    assert it.index("receive_descriptor(") < it.index("with fork_session(")
-    assert "recv_decision('Reviewer')" in it
+def test_initiator_local_view_shows_creation_before_fork():
+    hr = render_workflow(onboard_employees, options=ViewOptions(agent="HR"))
+    assert hr.index("allocate_session(") < hr.index("send_invitation(")
+    assert hr.index("send_invitation(") < hr.index("with fork_session(")
+    assert "confirmation = recv('Employee')" in hr
 
 
-def test_semantics_records_binding_and_parent_role_boundary():
-    model = workflow_semantics(access_reviews)
-    assert set(model["lifelines"]) == {"Manager", "Reviewer", "IT"}
-    assert model["root_lifelines"] == ["Manager", "IT"]
+def test_semantics_records_allocation_and_parent_role_boundary():
+    model = workflow_semantics(onboard_employees)
+    assert set(model["lifelines"]) == {"HR", "Employee"}
+    assert model["root_lifelines"] == ["HR"]
     region = next(region for region in model["regions"] if region["kind"] == "spawn")
-    assert region["binding"] == {"owner": "Manager", "expression": "bindings"}
-    assert region["retain"] == ["IT", "Manager"]
-    assert all(not field.startswith("Reviewer.") for field in region["fresh"])
+    assert region["initiator"] == "HR"
+    assert region["retain"] == ["HR"]
+    assert region["allocate"] == ["Employee"]
+    assert set(region["fresh"]) == {"HR.hire", "HR.confirmation"}

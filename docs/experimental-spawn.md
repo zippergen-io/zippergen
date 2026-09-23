@@ -2,7 +2,8 @@
 
 `parallel` runs concurrent branches within one session. `spawn` starts another
 session while the current one continues. The inherited form uses the current
-participants; the bound form below selects endpoints for a new session.
+participants; the initiated form below allocates fresh endpoints for child roles
+that are not retained.
 
 ```python
 with spawn(fresh=(Mailbox.request, Writer.request, Writer.draft)):
@@ -10,7 +11,7 @@ with spawn(fresh=(Mailbox.request, Writer.request, Writer.draft)):
     Writer: draft = draft_reply(request)
 ```
 
-There is no initiating participant, handle or join. A child can continue after
+This inherited form has no initiating participant, handle or join. A child can continue after
 its parent finishes, including beyond an enclosing parallel region. Existing
 parallel joins remain participant-local.
 
@@ -83,7 +84,7 @@ variables also have separate storage in each session.
 
 ## Projection and execution
 
-Each involved participant receives a local fork instruction with the same
+In inherited spawn, each involved participant receives a local fork instruction with the same
 static source-tree location. The local child name combines parent session,
 spawn location and visit counter. Enclosing decisions include participants
 that occur only in a spawned body. They therefore see the choices needed to
@@ -117,74 +118,74 @@ all their sessions before collecting workflow outputs. That is the lifetime of
 the run, not a join inserted into the parent's program. A service or durable
 run stopped with pending children resumes them from its store.
 
-## Dynamic role bindings
+## Fresh participants
 
-Keep a named `@fragment` as the static protocol and choose its endpoints in an
-owner-local value:
+Keep the roles static and let spawn allocate the new participants:
 
 ```python
-Manager: bindings = select_reviewer(request)
-spawn(AccessReview, bindings=bindings @ Manager,
-      retain=(Manager, IT), fresh="all")
+spawn(Onboarding, at=HR, retain=(HR,),
+      fresh=(HR.hire, HR.confirmation))
 ```
 
-The binding is a JSON mapping such as
-`{"Manager": "Manager", "Reviewer": "reviewer-east", "IT": "IT"}`.
-It must name exactly the child roles, with distinct endpoint IDs. Retained
-roles keep their parent addresses. Omitted `retain` means no retained roles
-in this form. Omitting `bindings` keeps ordinary inherited spawn.
+`Onboarding` is an ordinary `@fragment` with roles HR and Employee. HR initiates
+creation and retains its endpoint. Employee receives a fresh endpoint on every
+visit. The runtime installs Employee's already compiled role program there.
+Omit `retain` to allocate fresh endpoints for every child role; the initiator
+need not participate in the child. Without `at`, all child roles inherit their
+parent endpoints and no distinguished initiator is required.
 
-Register additional endpoint IDs with `endpoints=` when calling `run` or
-`run_sqlite`. Root roles retain their same-name endpoints. An endpoint can
-host different roles in different concurrent sessions, but cannot play two
-roles in the same session. The current backend hosts these workers in the
-existing local runtime/store; it does not add network deployment or independent
-administrative stores. Registration and selection do not create remote agents.
-Additional endpoint registration is currently a Python runner API; `zg run`
-and deployment configuration have no corresponding registry option yet. Use
-the executable example below to run recruited endpoints. Selecting an
-unregistered endpoint fails explicitly.
+There is no application binding expression or endpoint registry. Arbitrary
+recruitment of an existing service is not supported. Each endpoint keeps its
+role across the sessions that retain it. Fresh endpoints are local execution
+workers in the current backend; allocating one does not create a machine,
+credential, account, or human being. Human actions and other external actions
+connect that worker to the appropriate external service or person.
 
-Use `endpoint_backends={"reviewer-east": {"llm": review_backend}}` to select
-backends for a particular endpoint. Supported keys are `llm`, `human`, and
-`assistant`; omitted keys use the runner's corresponding default backend.
-These are Python callables, not remote endpoint addresses. Endpoint-specific
-backends apply to every role hosted there; each action still identifies its
-static role. Configure a separate backend when endpoints need separate provider
-credentials or human-task delivery. Endpoint-specific human callbacks must be
-worker-safe; a main-thread-only human backend can instead be supplied as the
-runner's shared default.
+The initiator records the fresh session and its resolved endpoint binding.
+Retained roles receive descriptors and fork locally. Newly allocated endpoints
+receive initialization messages and activate their child programs. A role may
+start once its own activation completes; messages can wait for another role to
+activate. There is no global activation barrier or child-completion join.
 
-Role programs are projected before endpoint values are known. The owner
-records a binding, sends descriptors to retained roles and invitations to
-recruits, then forks locally if retained. Other retained roles receive their
-descriptor and fork. A recruited role starts after its invitation is accepted,
-even if it had no parent control or the parent has finished. Each role can
-proceed once its own activation permits it; messages may wait for a recipient
-that has not activated yet. There is no global activation barrier.
+### Initializing child state
 
-Recruited fields start fresh and uninitialized, including when the endpoint
-already serves another session. They do not copy that endpoint's root values
-or `Var` defaults. Retained freshness still copies at the local fork, not when
-the owner selects the binding. `fresh="all"` selects retained fields;
-recruited fields are fresh independently. `all_except(...)` may preserve only
-retained fields. Inputs for recruits must arrive by actions or messages.
+Session freshness, endpoint freshness, and field freshness are distinct.
+Selected retained fields copy at that role's local fork. Unselected retained
+fields keep their parent cell references. New endpoints have fresh,
+uninitialized protocol fields, including fields with module-level `Var`
+defaults: those defaults initialize only the original participants. Initialize
+new fields by protocol messages or actions before reading them.
 
-Selection, fan-out progress and activation are durable runtime state. Once a
-child binding commits, recovery reuses it. This does not make a preceding
-external reviewer-selection action exactly-once; its ordinary effect replay
-window remains. The paper's symbolic invitation calculus assumes reliable
-queues and excludes crashes, so runtime recovery tests are an additional
-engineering guarantee, not its projection theorem.
+For example, HR copies its current `hire` into the child. Then
+`HR(hire) >> Employee(details)` initializes Employee.details with that hire.
+An Employee action can compute Employee.response, which returns in an explicit
+message. No cross-participant cell sharing or copying is implied by matching
+field names. `fresh="all"` and `all_except(...)` select retained fields only;
+new endpoints are fresh regardless of that selection.
 
-The configured endpoint registry is part of the durable run's identity. Resume
-with the same registry: adding or removing configured endpoints is currently
-rejected, even if an endpoint has not yet been selected. Changing endpoint
-membership for a live durable run needs a separate lifecycle design.
+Copying takes place at each retained role's local fork, rather than at the
+initiator's allocation step. An uninitialized retained field stays
+uninitialized when copied. Nested inherited spawns preserve current endpoint
+and cell bindings unless their field selector requests new cells.
 
-See [the executable access-review example](../examples/dynamic_spawn/specification.md).
-The exact local view for Reviewer shows its statically compiled child template;
-the global view preserves source-level binding and retention choices.
+### Allocation and recovery
+
+Endpoint identities are derived from the fresh child session identity and the
+static role in a reserved namespace. Concurrent visits and nested spawns thus
+have different identities without querying a global allocator. The current
+runtime scopes these identities to a workflow execution/store.
+
+Durable creation records preserve the session, endpoint allocation and binding.
+Recovery creates the recorded workers, resumes partial initialization, and
+deduplicates activation without resetting completed child state. The endpoint
+population grows automatically as the protocol spawns new participants.
+Existing effect replay rules still apply to arrival sources and human delivery;
+allocation does not atomically claim an item in an external system.
+
+See [the executable onboarding example](../examples/dynamic_spawn/specification.md).
+The exact Employee view shows the statically compiled child program and no
+parent intake loop. Global views and semantic snapshots show the initiator,
+retained roles and roles allocated fresh endpoints.
 
 ## Persistence and compatibility
 
@@ -215,6 +216,11 @@ Changing a workflow that already has durable sessions still requires the
 existing deployment compatibility checks. Do not resume its store using an
 older ZipperGen version that cannot decode session controls.
 
+The removed `bindings=` version is not an alternative syntax for allocation.
+Existing runs of that version need their original workflow and runtime to
+finish; changing them to `at=` does not migrate their saved controls or endpoint
+assignments. The compatibility check rejects such a resume.
+
 Source-tree locations depend on the program structure. Inserting a statement
 can change later spawn sites and invalidate saved control positions, even when
 the edit looks small. The fingerprint check rejects an incompatible resume.
@@ -237,9 +243,13 @@ repeat when several sessions are at the same instruction.
   but do not constitute the paper's projection and progress proof.
 - CPL guards are rejected in workflows containing spawn. Cross-session causal
   queries have not been assigned a semantics.
-- There is no join, wait, cancellation, participant creation, session limit or
-  automatic backpressure. Bound intake while evaluating it.
+- There is no join, wait, cancellation, arbitrary existing-endpoint recruitment,
+  session limit or automatic backpressure. Bound intake while evaluating it.
 - The store remains local to the existing service. Spawn does not add remote
   transport or isolation between administrative domains.
+- Fresh endpoint workers remain hosted until the finite run completes, even
+  after their sessions finish. An unbounded intake therefore accumulates idle
+  worker threads and durable endpoint rows. Automatic worker retirement and
+  admission limits are not implemented yet.
 - External effects retain their existing replay window. Copying a work-item
   identity does not atomically claim that item in an external mailbox or queue.
