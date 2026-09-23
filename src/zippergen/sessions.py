@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, cast
 
 from zippergen.locator import _children
 from zippergen.syntax import (
-    EmptyStmt, ForkStmt, AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt,
+    EmptyStmt, ForkStmt, SpawnVisitStmt, InitSendStmt,
     BoundForkStmt, IfRecvStmt, WhileRecvStmt, LocalStmt, VarExpr,
 )
 from zippergen.value_codec import encode_value, decode_value
@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 
 
 def has_forks(stmt) -> bool:
-    return isinstance(stmt, (ForkStmt, AllocateSessionStmt, BoundSendStmt,
-                             BoundReceiveStmt, BoundForkStmt)) or any(
+    return isinstance(stmt, (ForkStmt, SpawnVisitStmt, InitSendStmt,
+                             BoundForkStmt)) or any(
                                  has_forks(c) for c in _children(stmt))
 
 
@@ -88,7 +88,6 @@ class Session:
     role: str | None = None
     role_endpoints: dict[str, str] = field(default_factory=dict)
     template: str | None = None
-    pending_descriptors: dict[str, dict] = field(default_factory=dict)
 
 
 class CellEnv(MutableMapping):
@@ -174,7 +173,7 @@ class ScopedChannel:
         self.state.activations[key] = descriptor
         return True
 
-    def allocate(self, stmt):
+    def begin_spawn(self, stmt):
         parent = self.session
         visit = parent.visits.get(stmt.site, 0) + 1
         child = f"{parent.name}/{stmt.site}:{visit}"
@@ -198,54 +197,31 @@ class ScopedChannel:
     def _current_descriptor(self, site):
         visit = self.session.visits.get(site, 0)
         if not visit:
-            raise RuntimeError(f"No selected spawn at site {site!r}")
+            raise RuntimeError(f"No local spawn visit at site {site!r}")
         child = f"{self.session.name}/{site}:{visit}"
-        descriptor = self.state.creations.get(child) or self.session.pending_descriptors.get(site)
+        descriptor = self.state.creations.get(child)
         if descriptor is None or descriptor["child"] != child:
             raise RuntimeError(f"Missing recorded descriptor for {child!r}")
         return descriptor
 
     def send_init(self, stmt):
-        descriptor = self._current_descriptor(stmt.site)
+        descriptor = (self.begin_spawn(stmt) if stmt.starts_visit else
+                      self._current_descriptor(stmt.site))
         recipient = stmt.recipient.name
         endpoint = descriptor["bindings"][recipient]
-        if stmt.kind == "desc":
-            sender = self.state.endpoint
-            channel = f"init:desc:{self.session.name}:{stmt.site}:{stmt.owner.name}:{recipient}"
-        else:
-            sender = self.state.endpoint
-            channel = f"init:invite:{descriptor['child']}:{recipient}"
-        self.channel.put(sender, endpoint, channel, (descriptor,))
-        return descriptor
-
-    def receive_init(self, stmt):
-        parent = self.session
-        channel = f"init:desc:{parent.name}:{stmt.site}:{stmt.owner.name}:{stmt.role.name}"
-        item = self.channel.try_get(parent.role_endpoints[stmt.owner.name],
-                                    self.state.endpoint, channel)
-        if item is None:
-            return None
-        descriptor = item[1][0]
-        expected = f"{parent.name}/{stmt.site}:{parent.visits.get(stmt.site, 0) + 1}"
-        self.state.validate_descriptor(descriptor, stmt.template, stmt.role.name,
-                                       expected_child=expected, retained=True)
-        if descriptor.get("parent") != parent.name or descriptor.get("site") != stmt.site \
-                or descriptor.get("owner") != stmt.owner.name:
-            raise ValueError("Retained descriptor names a different parent spawn")
-        for role in descriptor["retain"]:
-            if descriptor["bindings"][role] != parent.role_endpoints.get(role):
-                raise ValueError(f"Retained role {role!r} changed endpoint")
         conn = getattr(self.channel, "conn", None)
         if conn is not None:
-            from zippergen.store import load_spawn_instance
-            if load_spawn_instance(conn, descriptor["child"]) != descriptor:
-                raise ValueError("Retained descriptor conflicts with creation record")
-        parent.pending_descriptors[stmt.site] = descriptor
-        parent.visits[stmt.site] = parent.visits.get(stmt.site, 0) + 1
+            from zippergen.store import record_spawn_allocation
+            record_spawn_allocation(conn, descriptor["child"], recipient, endpoint)
+        self.channel.put(self.state.endpoint, endpoint,
+                         f"init:invite:{descriptor['child']}:{recipient}", (descriptor,))
+        if conn is None:
+            self.channel.register_spawn_allocation(descriptor["child"], recipient, endpoint)
         return descriptor
 
     def fork_bound(self, stmt):
-        descriptor = self._current_descriptor(stmt.site)
+        descriptor = (self.begin_spawn(stmt) if stmt.starts_visit else
+                      self._current_descriptor(stmt.site))
         self.state.validate_descriptor(descriptor, stmt.template, stmt.role.name,
                                        retained=True)
         child = descriptor["child"]
@@ -264,7 +240,6 @@ class ScopedChannel:
             child, body, bindings, role=stmt.role.name,
             role_endpoints=dict(descriptor["bindings"]), template=stmt.template,
         )
-        parent.pending_descriptors.pop(stmt.site, None)
         return child
 
     def effect_ready(self, node):
@@ -504,7 +479,6 @@ class SessionState:
                              s.residual),
                          "bindings": s.bindings, "role_endpoints": s.role_endpoints,
                          "visits": s.visits, "steps": s.steps,
-                         "pending_descriptors": s.pending_descriptors,
                          "waiting": encode_value(s.waiting)} for s in self.sessions.values()]}
         return {"k": "sessions", "v": 1, "cursor": self.cursor,
                 "cells": encode_value(self.cells),
@@ -545,7 +519,6 @@ class SessionState:
                     name, residual, dict(entry["bindings"]), dict(entry["visits"]),
                     entry["steps"], cast(dict[str, dict], waiting), role,
                     dict(entry["role_endpoints"]), token,
-                    dict(entry.get("pending_descriptors", {})),
                 )
             cells = decode_value(data["cells"])
             if not isinstance(cells, dict):

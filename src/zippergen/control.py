@@ -230,6 +230,7 @@ def _shape(node) -> list:
         "recipient",
         "kind",
         "role",
+        "starts_visit",
     ):
         value = getattr(node, name, None)
         if value is not None:

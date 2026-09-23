@@ -2,15 +2,22 @@
 
 ## Unreleased
 
+- Retained roles in initiated spawn now derive child bindings locally and fork
+  independently, without descriptor messages. Messages may queue before fresh
+  endpoints are allocated; each initialization send allocates only its target.
+  Durable allocation records preserve this behavior across restart. Existing
+  initiated-spawn runs require their original runtime (`fresh-v1`); the new
+  projection is fingerprinted as `fresh-v2`.
+
 - Experimental fresh-participant spawn allocates endpoints while keeping role
   projections static: `spawn(Onboarding, at=HR, retain=(HR,), fresh="all")`.
   Retained roles fork locally; other roles start on newly created endpoints
   with uninitialized cells. The earlier arbitrary `bindings=`/endpoint-registry
   API is removed. Global/local views and snapshots expose allocation choices.
   See [fresh participants](docs/experimental-spawn.md#fresh-participants).
-- Durable stores upgrade from schema 4 to 5 by adding spawn creation and
-  activation ledgers transactionally. Existing workflow state is preserved;
-  read-only inspection leaves schema-4 stores unchanged.
+- Durable stores upgrade from schemas 4/5 to 6 by adding missing spawn creation,
+  activation and allocation ledgers transactionally. Existing workflow state is preserved;
+  read-only inspection leaves old stores unchanged.
 - Added `spawn(fresh=all_except(Writer.preferences))` to infer private child
   fields while retaining selected existing participant-local cells. Invalid
   exclusions fail during construction. Nested exclusions inherit the current

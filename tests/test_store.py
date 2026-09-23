@@ -53,6 +53,7 @@ EXPECTED_TABLES = {
     "role_state",
     "spawn_instances",
     "spawn_activations",
+    "spawn_allocations",
     "store_meta",
     "workflow_results",
 }

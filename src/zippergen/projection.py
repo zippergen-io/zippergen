@@ -11,7 +11,7 @@ from dataclasses import replace, dataclass
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt, SpawnStmt, ForkStmt,
-    AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
+    SpawnVisitStmt, InitSendStmt, BoundForkStmt,
     SendStmt, RecvStmt, SelfAssignStmt, IfRecvStmt, WhileRecvStmt,
     ParallelLocalStmt,
     Lifeline, LocalStmt, AnyStmt, Var, VarExpr, LitExpr,
@@ -166,27 +166,25 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
                 child = _project(body, A, context, "main", site + ".0")
                 return ForkStmt(A, site, child, names)
             retained = tuple(sorted(retain or (), key=lambda role: role.name))
-            template = f"fresh-v1:{site}:{canonical_construct_key(stmt)}"
+            template = f"fresh-v2:{site}:{canonical_construct_key(stmt)}"
+            new_roles = tuple(role for role in interface if role not in retained)
+            child = (_project(body, A, _Context(context._occupied, True),
+                              "main", site + ".0") if A in retained else None)
             if A == owner:
                 instructions: list[LocalStmt] = [
-                    AllocateSessionStmt(owner, site, interface, retained, template),
+                    InitSendStmt(owner, site, role, interface, retained, template, i == 0)
+                    for i, role in enumerate(new_roles)
                 ]
-                for role in sorted((set(interface) - ({owner} if owner in retained else set())),
-                                   key=lambda role: role.name):
-                    kind = "desc" if role in retained else "invite"
-                    instructions.append(BoundSendStmt(owner, site, role, kind))
                 if owner in retained:
-                    child = _project(body, A, _Context(context._occupied, True),
-                                     "main", site + ".0")
-                    instructions.append(BoundForkStmt(A, site, child, names, template,
-                                                      interface, retained))
+                    instructions.append(BoundForkStmt(
+                        A, site, cast(LocalStmt, child), names, template, interface,
+                        retained, owner, starts_visit=not new_roles,
+                    ))
+                elif not new_roles:
+                    instructions.append(SpawnVisitStmt(owner, site, interface, retained, template))
                 return cast(LocalStmt, seq(*instructions))
-            child = _project(body, A, _Context(context._occupied, True),
-                             "main", site + ".0")
-            return cast(LocalStmt, seq(
-                BoundReceiveStmt(A, site, owner, template),
-                BoundForkStmt(A, site, child, names, template, interface, retained),
-            ))
+            return BoundForkStmt(A, site, cast(LocalStmt, child), names, template,
+                                 interface, retained, owner)
 
         # parallel { P_i }_i
         case ParallelStmt(branches=branches):
@@ -335,7 +333,7 @@ def project_templates(wf: Workflow) -> dict[tuple[str, str], SpawnTemplate]:
             interface = tuple(sorted(participation_set(node.body), key=lambda role: role.name))
             retained = (interface if node.owner is None else
                         tuple(sorted(node.retain or (), key=lambda role: role.name)))
-            template = (f"fresh-v1:{site}:{canonical_construct_key(node)}" if node.owner is not None
+            template = (f"fresh-v2:{site}:{canonical_construct_key(node)}" if node.owner is not None
                         else f"inherited-v1:{site}:{canonical_construct_key(node)}")
             for role in interface:
                 program = _project(node.body, role, _Context(frozenset(occupied), True),

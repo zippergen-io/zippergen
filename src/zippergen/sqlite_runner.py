@@ -23,11 +23,12 @@ from zippergen.store import (
     claim_workflow_identity,
     load_workflow_result,
     list_role_states,
-    list_spawn_instances,
+    list_spawn_allocations,
     open_store,
     write_workflow_result,
 )
 from zippergen.syntax import (
+    contains_initiated_spawn,
     Lifeline,
     Var,
     Workflow,
@@ -153,7 +154,7 @@ class LocalSupervisor:
 
     def run(self) -> object:
         templates = project_templates(self.wf)
-        if any(t.template.startswith("fresh-v1:") for t in templates.values()):
+        if contains_initiated_spawn(self.wf.body):
             return self._run_fresh(templates)
         local_programs = {
             lifeline.name: project(self.wf, lifeline) for lifeline in self.lifelines
@@ -392,15 +393,13 @@ class LocalSupervisor:
                     pending_messages = observer.execute(
                         "SELECT 1 FROM outstanding_messages LIMIT 1"
                     ).fetchone()
-                    creations = list_spawn_instances(observer)
+                    allocations = list_spawn_allocations(observer)
                     observer.execute("COMMIT")
                 except BaseException:
                     observer.execute("ROLLBACK")
                     raise
-                for descriptor in creations:
-                    for role, endpoint in descriptor["bindings"].items():
-                        if role in descriptor["retain"] or endpoint in configured:
-                            continue
+                for _child, role, endpoint in allocations:
+                    if endpoint not in configured:
                         configured.add(endpoint)
                         start_worker(endpoint, role)
                 if (len(states) == len(configured)

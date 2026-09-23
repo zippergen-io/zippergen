@@ -53,10 +53,12 @@ parent addresses; other roles get globally fresh addresses within the run.
 Use a collision-free namespace derived from child identity and role, disjoint
 from initial endpoints; no globally consulted name registry is needed.
 
-Create actual endpoint workers and register their durable state. Allocation
-precedes use of their identities, and initialization precedes child execution.
-Retained roles receive their descriptor and fork locally. Fresh workers accept
-initialization and install their compiled local role programs. Different
+Retained roles derive the child name and binding independently at their local
+fork. No descriptor traffic between parent roles is needed. Each initiator
+initialization send allocates that one fresh endpoint and registers it for a
+worker; its receive activates the compiled role program. Application messages
+may queue for deterministically named endpoints before allocation; naming an
+address is not execution there. Different
 roles can start at different times. There is no global activation barrier or
 child completion join. Parent completion must not terminate pending children.
 
@@ -78,8 +80,9 @@ Descendants may keep inherited cells after their allocating session finishes.
 
 ## Recovery
 
-Persist allocation and creation progress atomically with the initiating local
-step. A committed child keeps its endpoint identities across retries. Resume
+Persist each allocation and initialization send atomically with its initiating
+local step. A retained fork independently commits its local creation state; it
+does not require or publish endpoint allocation. A committed child keeps its endpoint identities across retries. Resume
 partial initialization, recreate recorded workers and deduplicate activation,
 including stale initialization messages after completion. Retained copy and
 local installation commit together. Completion checks must account for every
@@ -122,7 +125,7 @@ skill updates. Do not change unrelated Lean experiments or draft documents.
 
 ## Formal boundary
 
-The paper models fresh endpoint allocation, endpoint-local words and activation
+The paper models fresh endpoint allocation, session-role words, final endpoint assembly and activation
 causality explicitly. Recheck allocation freshness, descriptor agreement,
 activation-before-execution, endpoint assembly, erasure and inherited-fragment
 conservativity. Separate mathematical arguments from checked Lean results;

@@ -683,8 +683,8 @@ class ForkStmt:
 
 
 @dataclass(frozen=True)
-class AllocateSessionStmt:
-    """Owner records one child visit and allocates fresh endpoints."""
+class SpawnVisitStmt:
+    """An initiator with no initialization sends or child fork visits the site."""
     owner: Lifeline
     site: str
     interface: tuple[Lifeline, ...]
@@ -693,26 +693,20 @@ class AllocateSessionStmt:
 
 
 @dataclass(frozen=True)
-class BoundSendStmt:
-    """Owner sends its recorded descriptor or an invitation."""
+class InitSendStmt:
+    """Allocate one fresh endpoint and send its initialization descriptor."""
     owner: Lifeline
     site: str
     recipient: Lifeline
-    kind: str
-
-
-@dataclass(frozen=True)
-class BoundReceiveStmt:
-    """Retained role receives and validates the owner's descriptor."""
-    role: Lifeline
-    site: str
-    owner: Lifeline
+    interface: tuple[Lifeline, ...]
+    retain: tuple[Lifeline, ...]
     template: str
+    starts_visit: bool
 
 
 @dataclass(frozen=True)
 class BoundForkStmt:
-    """Retained role installs its child code and copies selected cells."""
+    """Retained role derives its binding locally, then installs child code."""
     role: Lifeline
     site: str
     body: LocalStmt
@@ -720,6 +714,8 @@ class BoundForkStmt:
     template: str
     interface: tuple[Lifeline, ...]
     retain: tuple[Lifeline, ...]
+    owner: Lifeline
+    starts_visit: bool = True
 
 
 Stmt = Union[EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt, ParallelStmt, SpawnStmt]
@@ -847,7 +843,7 @@ class ParallelLocalStmt:
 LocalStmt = Union[
     EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelLocalStmt, ForkStmt,
-    AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
+    SpawnVisitStmt, InitSendStmt, BoundForkStmt,
 ]
 
 # Union covering both global (Stmt) and local (LocalStmt) programs.
@@ -856,8 +852,25 @@ LocalStmt = Union[
 AnyStmt = Union[
     EmptyStmt, MsgStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelStmt, ParallelLocalStmt, SpawnStmt, ForkStmt,
-    AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
+    SpawnVisitStmt, InitSendStmt, BoundForkStmt,
 ]
+
+
+def contains_initiated_spawn(stmt: AnyStmt) -> bool:
+    """Include empty initiated bodies, which have no child-role templates."""
+    match stmt:
+        case SpawnStmt(owner=owner, body=body):
+            return owner is not None or contains_initiated_spawn(body)
+        case SeqStmt(first=a, second=b):
+            return contains_initiated_spawn(a) or contains_initiated_spawn(b)
+        case IfStmt(branch_true=a, branch_false=b):
+            return contains_initiated_spawn(a) or contains_initiated_spawn(b)
+        case WhileStmt(body=a, exit_body=b):
+            return contains_initiated_spawn(a) or contains_initiated_spawn(b)
+        case ParallelStmt(branches=branches):
+            return any(contains_initiated_spawn(branch) for branch in branches)
+        case _:
+            return False
 
 
 def contains_spawn(stmt: AnyStmt) -> bool:
@@ -1144,10 +1157,8 @@ def _participation_set(
             return _participants(body, memo)
         case BoundForkStmt(role=role):
             return frozenset({role})
-        case AllocateSessionStmt(owner=owner) | BoundSendStmt(owner=owner):
+        case SpawnVisitStmt(owner=owner) | InitSendStmt(owner=owner):
             return frozenset({owner})
-        case BoundReceiveStmt(role=role):
-            return frozenset({role})
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
             branch_participants: frozenset[Lifeline] = frozenset()
             for branch in branches:
@@ -1201,9 +1212,9 @@ def occurring_variable_declarations(stmt: AnyStmt) -> frozenset[Var]:
             return occurring_variable_declarations(body)
         case ForkStmt(body=body) | BoundForkStmt(body=body):
             return occurring_variable_declarations(body)
-        case AllocateSessionStmt():
+        case SpawnVisitStmt():
             return frozenset()
-        case BoundSendStmt() | BoundReceiveStmt():
+        case InitSendStmt():
             return frozenset()
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
             in_branches: frozenset[Var] = frozenset()
@@ -1323,14 +1334,12 @@ def pp(node: AnyStmt, indent: int = 0) -> str:
             return f"{pad}spawn {details}:\n" + pp(body, indent + 1)
         case ForkStmt(body=body, site=site, fresh=fresh):
             return f"{pad}fork {site} fresh={fresh}:\n" + pp(body, indent + 1)
-        case AllocateSessionStmt(owner=owner, site=site, interface=interface, retain=retain):
+        case SpawnVisitStmt(owner=owner, site=site, interface=interface, retain=retain):
             roles = ", ".join(role.name for role in interface)
             kept = ", ".join(role.name for role in retain)
-            return f"{pad}allocate {site} @{owner.name} interface=({roles}) retain=({kept})"
-        case BoundSendStmt(owner=owner, site=site, recipient=recipient, kind=kind):
-            return f"{pad}{kind} {site} {owner.name} → {recipient.name}"
-        case BoundReceiveStmt(role=role, site=site, owner=owner):
-            return f"{pad}desc {site} {role.name} ← {owner.name}"
+            return f"{pad}visit spawn {site} @{owner.name} interface=({roles}) retain=({kept})"
+        case InitSendStmt(owner=owner, site=site, recipient=recipient):
+            return f"{pad}initialize {site} {owner.name} → {recipient.name}"
         case BoundForkStmt(role=role, site=site, body=body, fresh=fresh):
             return f"{pad}fork bound {site} {role.name} fresh={fresh}:\n" + pp(body, indent + 1)
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):

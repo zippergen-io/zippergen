@@ -55,6 +55,7 @@ class InProcessChannel:
         self._init_inflight = 0
         self._activity_generation = 0
         self._spawn_instances: dict[str, dict] = {}
+        self._spawn_allocations: dict[tuple[str, str], str] = {}
 
     def register_spawn_instance(self, descriptor: dict) -> None:
         with self._lock:
@@ -65,9 +66,19 @@ class InProcessChannel:
             self._spawn_instances[child] = descriptor
             self._activity_generation += 1
 
-    def spawn_instances(self) -> tuple[dict, ...]:
+    def register_spawn_allocation(self, child: str, role: str, endpoint: str) -> None:
         with self._lock:
-            return tuple(self._spawn_instances.values())
+            key = (child, role)
+            previous = self._spawn_allocations.get(key)
+            if previous is not None and previous != endpoint:
+                raise ValueError(f"Conflicting allocation for {key!r}")
+            self._spawn_allocations[key] = endpoint
+            self._activity_generation += 1
+
+    def spawn_allocations(self) -> tuple[tuple[str, str, str], ...]:
+        with self._lock:
+            return tuple((child, role, endpoint)
+                         for (child, role), endpoint in self._spawn_allocations.items())
 
     def _queue(self, key: tuple[str, str, str]) -> _SeqQueue:
         """Atomically get-or-create the queue for a key.

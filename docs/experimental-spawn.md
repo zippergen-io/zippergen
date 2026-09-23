@@ -141,11 +141,17 @@ workers in the current backend; allocating one does not create a machine,
 credential, account, or human being. Human actions and other external actions
 connect that worker to the appropriate external service or person.
 
-The initiator records the fresh session and its resolved endpoint binding.
-Retained roles receive descriptors and fork locally. Newly allocated endpoints
-receive initialization messages and activate their child programs. A role may
-start once its own activation completes; messages can wait for another role to
-activate. There is no global activation barrier or child-completion join.
+Each retained role computes the child session and binding from its own local
+spawn-site visit, then forks without receiving a descriptor from the initiator.
+The initiator computes the same binding and sends initialization only to fresh
+roles. Each send allocates its target endpoint; receiving it activates the
+child program. A retained child can send before the initiator reaches the
+spawn: the message waits at the future address, without creating a worker or
+running recipient code. There is no global activation barrier or child join.
+
+If there are no fresh roles, the initiator forks if retained; otherwise it
+executes a local visit marker. Empty initiated bodies still advance this local
+visit. The source syntax does not expose these internal instructions.
 
 ### Initializing child state
 
@@ -164,7 +170,7 @@ field names. `fresh="all"` and `all_except(...)` select retained fields only;
 new endpoints are fresh regardless of that selection.
 
 Copying takes place at each retained role's local fork, rather than at the
-initiator's allocation step. An uninitialized retained field stays
+initiator's initialization sends. An uninitialized retained field stays
 uninitialized when copied. Nested inherited spawns preserve current endpoint
 and cell bindings unless their field selector requests new cells.
 
@@ -175,8 +181,12 @@ static role in a reserved namespace. Concurrent visits and nested spawns thus
 have different identities without querying a global allocator. The current
 runtime scopes these identities to a workflow execution/store.
 
-Durable creation records preserve the session, endpoint allocation and binding.
-Recovery creates the recorded workers, resumes partial initialization, and
+Local creation records preserve the session and derived binding. They can
+exist before the initiator runs and do not themselves allocate any worker.
+The separate allocation ledger commits each fresh endpoint together with its
+initialization send and the initiator's successor control. A retained fork
+commits its binding, copied cells, activation and successor control together.
+Recovery creates only allocated workers, resumes partial initialization, and
 deduplicates activation without resetting completed child state. The endpoint
 population grows automatically as the protocol spawns new participants.
 Existing effect replay rules still apply to arrival sources and human delivery;
@@ -204,9 +214,9 @@ whose returned claim has not yet committed. The external service must support
 the required redelivery and idempotent acknowledgement. This is not an atomic
 transaction across a mailbox and the workflow store.
 
-Opening a schema-4 store for execution upgrades it transactionally to schema 5
-by adding the spawn-instance and activation ledgers. Existing workflow state
-is preserved; read-only inspection does not upgrade it. Older incompatible
+Opening a schema-4 or schema-5 store for execution upgrades it transactionally
+to schema 6, adding the missing creation, activation and allocation ledgers.
+Existing workflow state is preserved; read-only inspection does not upgrade it. Older incompatible
 recovery schemas still require an explicit reset. Workflows without spawn
 retain their existing projection, fingerprints and control encoding. Spawn
 workflows use source-tree locations for control tags and parallel namespaces
@@ -215,6 +225,13 @@ so identical fragments at different sites remain distinct.
 Changing a workflow that already has durable sessions still requires the
 existing deployment compatibility checks. Do not resume its store using an
 older ZipperGen version that cannot decode session controls.
+
+Initiated-spawn templates now use `fresh-v2` to identify the independent local
+fork semantics. Existing `fresh-v1` runs must finish with their original
+runtime, or be archived/reset before a fresh run. The workflow fingerprint
+rejects resuming their old controls under this semantics; adding a store table
+is not a migration of those controls. Inherited-only workflows keep their
+previous fingerprints and control representation.
 
 The removed `bindings=` version is not an alternative syntax for allocation.
 Existing runs of that version need their original workflow and runtime to

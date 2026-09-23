@@ -178,7 +178,7 @@ def _execute(wf, backend, tmp_path, *, trace):
 def test_repeated_allocations_get_distinct_endpoints_and_cells(backend, tmp_path):
     events = []
     _execute(two_reviews, backend, tmp_path, trace=events)
-    bindings = [event["bindings"] for event in events if event["type"] == "bind"]
+    bindings = [event["bindings"] for event in events if event["type"] == "init_send"]
     assert len(bindings) == 2
     assert bindings[0]["Manager"] == bindings[1]["Manager"] == "Manager"
     assert bindings[0]["Reviewer"] != bindings[1]["Reviewer"]
@@ -193,7 +193,7 @@ def test_repeated_allocations_get_distinct_endpoints_and_cells(backend, tmp_path
 def test_parallel_sites_allocate_disjoint_endpoints(backend, tmp_path):
     events = []
     _execute(parallel_reviews, backend, tmp_path, trace=events)
-    allocations = [event for event in events if event["type"] == "bind"]
+    allocations = [event for event in events if event["type"] == "init_send"]
     assert len(allocations) == 2
     assert len({event["site"] for event in allocations}) == 2
     assert len({event["bindings"]["Reviewer"] for event in allocations}) == 2
@@ -207,7 +207,7 @@ def test_multiple_fresh_roles_use_distinct_workers_and_route_messages(
 ):
     events = []
     _execute(two_fresh_roles, backend, tmp_path, trace=events)
-    descriptor = next(event["bindings"] for event in events if event["type"] == "bind")
+    descriptor = next(event["bindings"] for event in events if event["type"] == "init_send")
     assert descriptor["Manager"] == "Manager"
     assert len(set(descriptor.values())) == 3
     assert descriptor["Reviewer"].startswith("~spawn:")
@@ -234,8 +234,8 @@ def test_fresh_role_can_allocate_nested_role(backend, tmp_path):
     _execute(allocate_then_allocate, backend, tmp_path, trace=events)
     assert any(event["type"] == "act" and event.get("lifeline") == "IT"
                and event.get("outputs", {}).get("value") == 5 for event in events)
-    assert len([event for event in events if event["type"] == "bind"]) == 2
-    allocated = [event["bindings"] for event in events if event["type"] == "bind"]
+    assert len([event for event in events if event["type"] == "init_send"]) == 2
+    allocated = [event["bindings"] for event in events if event["type"] == "init_send"]
     addresses = {address for descriptor in allocated for address in descriptor.values()
                  if address.startswith("~spawn:")}
     assert len(addresses) == 2
@@ -250,7 +250,7 @@ def test_fresh_role_can_allocate_nested_role(backend, tmp_path):
 def test_owner_role_can_be_allocated_fresh_in_child(backend, tmp_path):
     events = []
     _execute(owner_fresh_in_child, backend, tmp_path, trace=events)
-    descriptor = next(event["bindings"] for event in events if event["type"] == "bind")
+    descriptor = next(event["bindings"] for event in events if event["type"] == "init_send")
     assert descriptor["Manager"] != "Manager"
     assert any(event["type"] == "act" and event.get("outputs", {}).get("value") == 5
                and event["session"] != "0" for event in events)
@@ -370,7 +370,7 @@ def test_durable_allocation_resumes_recorded_descriptor(tmp_path):
     path = str(tmp_path / "state.sqlite")
 
     def crash_after_allocation(event):
-        if event["type"] == "init_send":
+        if event["type"] == "fork":
             raise RuntimeError("crash after allocation")
 
     with pytest.raises(RuntimeError, match="crash after allocation"):
@@ -385,7 +385,7 @@ def test_durable_allocation_resumes_recorded_descriptor(tmp_path):
     with closing(open_store(path)) as conn:
         assert load_spawn_instance(conn, "0/0.0:1") == first
         assert conn.execute("SELECT COUNT(*) FROM spawn_instances").fetchone()[0] == 2
-    assert not any(event["type"] == "bind" and event["child_session"] == "0/0.0:1"
+    assert not any(event["type"] == "init_send" and event["child_session"] == "0/0.0:1"
                    for event in events)
 
 

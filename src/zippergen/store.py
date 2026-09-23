@@ -46,7 +46,9 @@ from zippergen.value_codec import decode_value, dumps_value, encode_value, loads
 #    resumed run.
 # 5: additive bound-spawn creation/activation ledgers. Version 4 is migrated
 # transactionally on writable open; its existing role/message recovery is intact.
-SCHEMA_VERSION = 5
+# 6: per-role allocation ledger, distinct from locally derived child bindings.
+# Initiated control compatibility is versioned separately by template fingerprints.
+SCHEMA_VERSION = 6
 
 # How many history rows a store keeps when it does not say otherwise. History is
 # optional and recovery never reads it, so this is a retention choice, not a
@@ -119,10 +121,16 @@ CREATE TABLE IF NOT EXISTS outstanding_messages (
 CREATE INDEX IF NOT EXISTS outstanding_by_route
   ON outstanding_messages(receiver, sender, channel, id);
 
--- A bound child is selected once. Activation rows remain after the role finishes.
+-- Independently derived bindings must agree. Allocations and activations persist.
 CREATE TABLE IF NOT EXISTS spawn_instances (
   child_id   TEXT PRIMARY KEY,
   descriptor TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS spawn_allocations (
+  child_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  PRIMARY KEY(child_id, role)
 );
 CREATE TABLE IF NOT EXISTS spawn_activations (
   child_id TEXT NOT NULL,
@@ -255,6 +263,7 @@ def open_store(path: str) -> sqlite3.Connection:
         try:
             _reject_replay_era_store(conn)
             _migrate_schema_4(conn)
+            _migrate_schema_5(conn)
             _check_store_schema(conn)
             conn.execute("COMMIT")
         except BaseException:
@@ -440,8 +449,26 @@ def _migrate_schema_4(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "UPDATE store_meta SET value=? WHERE key='schema_version'",
-        (str(SCHEMA_VERSION),),
+        ("5",),
     )
+
+
+def _migrate_schema_5(conn: sqlite3.Connection) -> None:
+    tables = {str(row[0]) for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "store_meta" not in tables:
+        return
+    row = conn.execute("SELECT value FROM store_meta WHERE key='schema_version'").fetchone()
+    if row is None or row[0] != "5":
+        return
+    required = {"role_state", "outstanding_messages", "spawn_instances", "spawn_activations",
+                "human_tasks", "human_task_tokens", "human_task_notifications", "adapter_state",
+                "workflow_results", "history"}
+    if not required <= tables:
+        raise StoreSchemaError("This incomplete schema 5 store is not migrated. Use 'zg run reset'.")
+    conn.execute("CREATE TABLE IF NOT EXISTS spawn_allocations (child_id TEXT NOT NULL, "
+                 "role TEXT NOT NULL, endpoint TEXT NOT NULL, PRIMARY KEY(child_id, role))")
+    conn.execute("UPDATE store_meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
 
 
 def _check_store_schema(conn: sqlite3.Connection, *, readonly=False) -> None:
@@ -471,7 +498,7 @@ def _check_store_schema(conn: sqlite3.Connection, *, readonly=False) -> None:
         "SELECT value FROM store_meta WHERE key='schema_version'"
     ).fetchone()
     actual = None if row is None else str(row[0])
-    if actual != str(SCHEMA_VERSION) and not (readonly and actual == "4"):
+    if actual != str(SCHEMA_VERSION) and not (readonly and actual in {"4", "5"}):
         raise StoreSchemaError(
             f"This durable store uses schema {actual or 'unknown'}, but this "
             f"ZipperGen requires schema {SCHEMA_VERSION}. Durable state is not "
@@ -608,7 +635,7 @@ def load_role_state(conn, role: str) -> dict | None:
 
 
 def record_spawn_instance(conn, child_id: str, descriptor: dict) -> None:
-    """Record one immutable selection in the caller's role-state transaction."""
+    """Record/check a locally derived binding in the role-state transaction."""
     payload = json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
     row = conn.execute(
         "SELECT descriptor FROM spawn_instances WHERE child_id=?", (child_id,)
@@ -633,6 +660,23 @@ def list_spawn_instances(conn) -> list[dict]:
     return [json.loads(row[0]) for row in conn.execute(
         "SELECT descriptor FROM spawn_instances ORDER BY child_id"
     ).fetchall()]
+
+
+def record_spawn_allocation(conn, child_id: str, role: str, endpoint: str) -> None:
+    """Record allocation atomically with initialization send and owner control."""
+    row = conn.execute("SELECT endpoint FROM spawn_allocations WHERE child_id=? AND role=?",
+                       (child_id, role)).fetchone()
+    if row is not None:
+        if row[0] != endpoint:
+            raise ValueError(f"Conflicting allocation for child {child_id!r} role {role!r}")
+        return
+    conn.execute("INSERT INTO spawn_allocations(child_id,role,endpoint) VALUES(?,?,?)",
+                 (child_id, role, endpoint))
+
+
+def list_spawn_allocations(conn) -> list[tuple[str, str, str]]:
+    return conn.execute("SELECT child_id,role,endpoint FROM spawn_allocations "
+                        "ORDER BY child_id,role").fetchall()
 
 
 def record_spawn_activation(conn, child_id: str, role: str, endpoint: str) -> bool:

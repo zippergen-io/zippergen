@@ -28,8 +28,9 @@ def test_fresh_role_view_shows_its_child_and_no_parent_loop():
 
 def test_initiator_local_view_shows_creation_before_fork():
     hr = render_workflow(onboard_employees, options=ViewOptions(agent="HR"))
-    assert hr.index("allocate_session(") < hr.index("send_invitation(")
-    assert hr.index("send_invitation(") < hr.index("with fork_session(")
+    assert "allocate_session(" not in hr
+    assert "receive_descriptor(" not in hr
+    assert hr.index("initialize_endpoint(") < hr.index("with fork_session(")
     assert "confirmation = recv('Employee')" in hr
 
 

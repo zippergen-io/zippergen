@@ -840,6 +840,12 @@ separate cells at separate participants. `fresh="all"` and `all_except(...)`
 apply only to retained fields. Nested inherited spawn keeps the current
 endpoint and cell references.
 
+Retained roles derive the child identity and binding locally; they do not wait
+for the initiator. Their child can send before a fresh recipient is allocated.
+Only an initialization send allocates that recipient, and its receive activates
+role code. Queuing a message at a future address does neither. The initiator
+sends initialization only to fresh roles.
+
 The runtime records allocation and initialization progress so durable retries
 reuse session/endpoint identities and do not activate the same role twice.
 New endpoints do not receive parent branch decisions. There is no global start

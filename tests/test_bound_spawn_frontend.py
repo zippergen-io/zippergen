@@ -7,7 +7,7 @@ from zippergen.availability import workflow_availability_error
 from zippergen.control import program_fingerprint
 from zippergen.projection import project, project_templates
 from zippergen.syntax import (
-    AllocateSessionStmt, BoundForkStmt, BoundReceiveStmt, BoundSendStmt,
+    SpawnVisitStmt, BoundForkStmt, InitSendStmt,
     SeqStmt, SpawnStmt, _all_workflow_lifelines, participation_set,
 )
 
@@ -58,16 +58,16 @@ def test_allocated_spawn_lowers_owner_and_retained_roles():
     ]
     manager = _leaves(project(allocated, Manager))
     assert [type(node) for node in manager] == [
-        AllocateSessionStmt, BoundSendStmt, BoundSendStmt, BoundForkStmt
+        InitSendStmt, BoundForkStmt
     ]
-    assert [node.recipient.name for node in manager[1:3]] == ["IT", "Reviewer"]
+    assert [node.recipient.name for node in manager[:1]] == ["Reviewer"]
     it = _leaves(project(allocated, IT))
-    assert [type(node) for node in it] == [BoundReceiveStmt, BoundForkStmt]
+    assert [type(node) for node in it] == [BoundForkStmt]
     assert project(allocated, Reviewer).__class__.__name__ == "EmptyStmt"
     templates = project_templates(allocated)
     reviewer = templates[("0", "Reviewer")]
     assert reviewer.fresh_endpoint and reviewer.fresh == ()
-    assert reviewer.template.startswith("fresh-v1:0:")
+    assert reviewer.template.startswith("fresh-v2:0:")
     assert program_fingerprint({"child": manager[-1].body}) == program_fingerprint(
         {"child": templates[("0", "Manager")].program}
     )
@@ -190,11 +190,11 @@ def owner_fresh_in_child():
 
 def test_owner_absent_and_owner_fresh_get_parent_creation_code():
     absent = _leaves(project(owner_absent_from_child, Manager))
-    assert [type(item) for item in absent] == [AllocateSessionStmt, BoundSendStmt]
-    assert absent[-1].recipient == Reviewer and absent[-1].kind == "invite"
+    assert [type(item) for item in absent] == [InitSendStmt]
+    assert absent[-1].recipient == Reviewer
     fresh = _leaves(project(owner_fresh_in_child, Manager))
-    assert [type(item) for item in fresh] == [AllocateSessionStmt, BoundSendStmt]
-    assert fresh[-1].recipient == Manager and fresh[-1].kind == "invite"
+    assert [type(item) for item in fresh] == [InitSendStmt]
+    assert fresh[-1].recipient == Manager
     assert project_templates(owner_fresh_in_child)[("0", "Manager")].fresh_endpoint
 
 

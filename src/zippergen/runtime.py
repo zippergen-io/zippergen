@@ -31,12 +31,13 @@ from zippergen.llm_policy import (
     retry_reporter,
 )
 from zippergen.syntax import (
+    contains_initiated_spawn,
     is_control_value,
     is_kappa_ctrl,
     EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     ParallelStmt, ParallelLocalStmt, SpawnStmt, ForkStmt,
-    AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
+    SpawnVisitStmt, InitSendStmt, BoundForkStmt,
     VarExpr, LitExpr, Var, Json,
     LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
@@ -652,35 +653,25 @@ def _step(
                        "fresh": list(stmt.fresh)})
             return EmptyStmt(), True
 
-        case AllocateSessionStmt():
+        case SpawnVisitStmt():
             if not isinstance(ch, ScopedChannel):
                 raise RuntimeError("Bound spawn requires an endpoint session scheduler")
-            descriptor = ch.allocate(stmt)
+            descriptor = ch.begin_spawn(stmt)
             if trace:
-                trace({"type": "bind", "lifeline": stmt.owner.name,
+                trace({"type": "spawn_visit", "lifeline": stmt.owner.name,
                        "site": stmt.site, "child_session": descriptor["child"],
                        "bindings": descriptor["bindings"]})
             return EmptyStmt(), True
 
-        case BoundSendStmt():
+        case InitSendStmt():
             if not isinstance(ch, ScopedChannel):
                 raise RuntimeError("Bound spawn requires an endpoint session scheduler")
             descriptor = ch.send_init(stmt)
             if trace:
                 trace({"type": "init_send", "lifeline": stmt.owner.name,
-                       "kind": stmt.kind, "to": stmt.recipient.name,
-                       "child_session": descriptor["child"]})
-            return EmptyStmt(), True
-
-        case BoundReceiveStmt():
-            if not isinstance(ch, ScopedChannel):
-                raise RuntimeError("Bound spawn requires an endpoint session scheduler")
-            descriptor = ch.receive_init(stmt)
-            if descriptor is None:
-                return stmt, False
-            if trace:
-                trace({"type": "init_recv", "lifeline": stmt.role.name,
-                       "child_session": descriptor["child"]})
+                       "kind": "init", "to": stmt.recipient.name, "site": stmt.site,
+                       "child_session": descriptor["child"],
+                       "bindings": descriptor["bindings"]})
             return EmptyStmt(), True
 
         case BoundForkStmt():
@@ -1502,10 +1493,8 @@ def _run_fresh(wf, lifelines, initial_envs, templates,
         while not finished.is_set():
             if stop.is_set():
                 break
-            for descriptor in channels.spawn_instances():
-                for role, endpoint in descriptor["bindings"].items():
-                    if role in descriptor["retain"] or endpoint in configured:
-                        continue
+            for _child, role, endpoint in channels.spawn_allocations():
+                if endpoint not in configured:
                     configured.add(endpoint)
                     start_worker(endpoint, role)
             generation = channels.activity_generation()
@@ -1585,7 +1574,7 @@ def run(
         trace = console_trace
 
     templates = project_templates(wf)
-    if any(t.template.startswith("fresh-v1:") for t in templates.values()):
+    if contains_initiated_spawn(wf.body):
         return _run_fresh(wf, lifelines, initial_envs, templates,
                           llm_backend, human_backend, assistant_backend,
                           trace, timeout)

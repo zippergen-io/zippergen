@@ -38,7 +38,7 @@ from zippergen.syntax import (
     MsgStmt,
     ParallelLocalStmt,
     ParallelStmt, SpawnStmt, ForkStmt,
-    AllocateSessionStmt, BoundSendStmt, BoundReceiveStmt, BoundForkStmt,
+    SpawnVisitStmt, InitSendStmt, BoundForkStmt,
     PlannerAction,
     PureAction,
     RecvStmt,
@@ -499,13 +499,10 @@ class _LocalRenderer:
             body = self.render_annotated(stmt.body, indent + 1, path + (0,))
             return [(path, f"{pad}with fork_session({stmt.site!r}, fresh={stmt.fresh!r}):"),
                     *(body or [(None, pad + "    pass")])]
-        if isinstance(stmt, AllocateSessionStmt):
-            return [(path, f"{pad}allocate_session({stmt.site!r}, retain={tuple(role.name for role in stmt.retain)!r})")]
-        if isinstance(stmt, BoundSendStmt):
-            operation = "send_invitation" if stmt.kind == "invite" else "send_descriptor"
-            return [(path, f"{pad}{operation}({stmt.site!r}, {stmt.recipient.name!r})")]
-        if isinstance(stmt, BoundReceiveStmt):
-            return [(path, f"{pad}receive_descriptor({stmt.site!r}, {stmt.owner.name!r})")]
+        if isinstance(stmt, SpawnVisitStmt):
+            return [(path, f"{pad}visit_spawn({stmt.site!r}, retain={tuple(role.name for role in stmt.retain)!r})")]
+        if isinstance(stmt, InitSendStmt):
+            return [(path, f"{pad}initialize_endpoint({stmt.site!r}, {stmt.recipient.name!r})")]
         if isinstance(stmt, SeqStmt):
             return [
                 *self.render_annotated(stmt.first, indent, path + (0,)),
@@ -674,12 +671,10 @@ def describe_local_statement(stmt: object) -> str:
         return "parallel local branches"
     if isinstance(stmt, (ForkStmt, BoundForkStmt)):
         return "start child session"
-    if isinstance(stmt, AllocateSessionStmt):
-        return "allocate child session and fresh endpoints"
-    if isinstance(stmt, BoundSendStmt):
-        return "send child invitation" if stmt.kind == "invite" else "send child descriptor"
-    if isinstance(stmt, BoundReceiveStmt):
-        return "receive child descriptor"
+    if isinstance(stmt, SpawnVisitStmt):
+        return "visit child creation site"
+    if isinstance(stmt, InitSendStmt):
+        return "allocate and initialize child endpoint"
     return type(stmt).__name__
 
 

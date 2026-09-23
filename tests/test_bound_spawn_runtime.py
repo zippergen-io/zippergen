@@ -73,7 +73,7 @@ def _flow_args(runner, tmp_path, *, trace=None):
 def test_fresh_child_runs_on_a_new_endpoint(runner, tmp_path):
     events = []
     runner(flow, **_flow_args(runner, tmp_path, trace=events.append))
-    creation = next(event for event in events if event["type"] == "bind")
+    creation = next(event for event in events if event["type"] == "init_send")
     child_id = creation["child_session"]
     assert creation["bindings"] == {"A": "A", "B": fresh_endpoint(child_id, "B")}
     assert any(event["type"] == "recv" and event["to"] == "A"
@@ -91,7 +91,7 @@ def test_fresh_root_input_type_is_checked(runner, tmp_path):
         runner(flow, **kwargs)
 
 
-@pytest.mark.parametrize("phase", ["bind", "invite", "fork"])
+@pytest.mark.parametrize("phase", ["invite", "fork"])
 def test_durable_allocation_resumes_from_committed_position(tmp_path, phase):
     from examples.dynamic_spawn.workflow import onboard_employees
 
@@ -103,9 +103,8 @@ def test_durable_allocation_resumes_from_committed_position(tmp_path, phase):
         if interrupted:
             return
         interrupted = (
-            phase == "bind" and event["type"] == "bind"
-            or phase == "invite" and event["type"] == "init_send"
-            and event["kind"] == "invite"
+            phase == "invite" and event["type"] == "init_send"
+            and event["kind"] == "init"
             or phase == "fork" and event["type"] == "fork"
             and event["lifeline"] == "HR"
         )
@@ -169,7 +168,7 @@ from examples.dynamic_spawn.workflow import onboard_employees
 from zippergen import run_sqlite
 
 def interrupt(event):
-    if event['type'] == 'init_send' and event['kind'] == 'invite':
+    if event['type'] == 'init_send' and event['kind'] == 'init':
         raise RuntimeError('injected crash')
 
 result = run_sqlite(onboard_employees, store_path=sys.argv[1],
