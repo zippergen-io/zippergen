@@ -130,6 +130,7 @@ class RoleRunner:
         root_bindings: dict[str, str] | None = None,
         templates: dict | None = None,
         completion: threading.Event | None = None,
+        cpl_plans: dict | None = None,
     ) -> None:
         if llm_backend is None:
             llm_backend = mock_llm
@@ -147,6 +148,7 @@ class RoleRunner:
         self.llm_backend = llm_backend
         self.human_backend = human_backend
         self.assistant_backend = assistant_backend
+        self.cpl_plans = cpl_plans
         self.monitor = monitor
         self.formula_conditions = formula_conditions or {}
         self.stop = stop
@@ -182,7 +184,7 @@ class RoleRunner:
             self.local_stmt, role=self.root_role, endpoint=self.role,
             root_bindings=self.root_bindings,
             templates=self.templates, keep_alive=self.completion is not None,
-        ) if self.templates is not None or has_forks(self.local_stmt) else self.local_stmt)
+        ) if self.templates is not None or has_forks(self.local_stmt) or self.cpl_plans else self.local_stmt)
         _begin_immediate(self.conn, self.stop)
         try:
             # Another process may have raced us; the first writer wins and we
@@ -280,6 +282,8 @@ class RoleRunner:
     def _status_for(self, residual, *, blocked: bool) -> tuple[str, dict]:
         paths = frontier_paths(self.local_stmt, residual)
         if not paths:
+            if isinstance(residual, SessionState) and residual.bound and not residual.can_retire:
+                return "blocked", {"kind": "initialization"}
             return "done", {}
         if not blocked:
             return "running", {}
@@ -530,6 +534,7 @@ class RoleRunner:
                 self.trace, self.stop, durable=True, assistant_backend=self.assistant_backend,
                 resolved=resolved, human_handler=handler,
                 monitor=self.monitor, formula_conditions=self.formula_conditions,
+                cpl_plans=self.cpl_plans, role=self.role,
             )
         return _step(
             residual,
@@ -572,6 +577,17 @@ class RoleRunner:
                 return
             if self.stop is not None and self.stop.is_set():
                 raise WorkflowCancelled("Workflow cancelled")
+
+            if isinstance(self.residual, SessionState) and self.residual.can_retire:
+                pending_init = self.conn.execute(
+                    "SELECT 1 FROM outstanding_messages "
+                    "WHERE receiver=? AND channel LIKE 'init:invite:%' LIMIT 1",
+                    (self.role,),
+                ).fetchone()
+                if pending_init is None:
+                    # Keep the committed SessionState (and activation ledger).
+                    # A later duplicate init can wake a worker to acknowledge it.
+                    return
 
             _begin_immediate(self.conn, self.stop)
             out, progressed = self.step(self.residual)

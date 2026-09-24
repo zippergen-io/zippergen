@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from zippergen import Lifeline, Var, fragment, pure, run, run_sqlite, spawn, workflow
+from zippergen import Lifeline, Var, fragment, pure, run, run_sqlite, spawn, workflow, skip
 from zippergen.sessions import SessionState, fresh_endpoint
 from zippergen.store import DurableChannel, load_spawn_instance, open_store
 
@@ -48,6 +48,7 @@ def flow(item: int @ A):
 
 @fragment
 def inherited_grandchild():
+    skip(A)
     B: answer = one()
     with spawn(fresh="all"):
         B: answer = double(answer)
@@ -55,7 +56,7 @@ def inherited_grandchild():
 
 @workflow
 def recruit_then_inherit():
-    spawn(inherited_grandchild, at=A, retain=())
+    spawn(inherited_grandchild, at=A, retain=(A,))
 
 
 def _flow_args(runner, tmp_path, *, trace=None):

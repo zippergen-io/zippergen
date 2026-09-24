@@ -311,7 +311,8 @@ def spawn(body: Callable | None = None, *,
     A zero-argument fragment may also be passed as ``spawn(fragment, fresh=...)``.
     Without ``at``, all child roles inherit their parent endpoints. With
     ``at=Owner``, only roles in ``retain`` inherit; every other child role gets
-    a fresh endpoint. Selected retained fields copy at their local forks.
+    a fresh endpoint. Owner must be in retain and in the child body.
+    Selected retained fields copy at their local forks.
     There is no join.
     ``fresh="all"`` copies every field read or written in the child body,
     including guards and nested fragments. It expands to an ordinary field list.

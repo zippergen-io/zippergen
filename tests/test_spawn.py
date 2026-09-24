@@ -289,10 +289,10 @@ def test_missing_cell_allocation_is_an_invariant_error(operation):
 @pytest.mark.parametrize('monitor_args', [
     {'monitor': object()}, {'formula_conditions': {1: spawn_guard}},
 ])
-def test_session_scheduler_refuses_unsupported_monitoring(monitor_args):
+def test_session_scheduler_refuses_endpoint_wide_monitoring(monitor_args):
     from zippergen.sessions import SessionState
     state = SessionState.start(EmptyStmt())
-    with pytest.raises(ValueError, match='CPL monitoring is not supported'):
+    with pytest.raises(ValueError, match='Endpoint-wide CPL monitors'):
         state.step({}, None, {}, None, None, None, None, **monitor_args)
 
 
@@ -354,9 +354,8 @@ def test_zero_visits_and_conditional_activation(runner):
         assert len([e for e in events if e['type'] == 'fork']) == (2 if enabled else 0)
 
 
-def test_spawn_rejects_undefined_cpl_semantics():
-    with pytest.raises(ValueError, match='CPL'):
-        project(unsupported_cpl, A)
+def test_spawn_accepts_session_scoped_cpl():
+    assert isinstance(project(unsupported_cpl, A), ForkStmt)
 
 
 def _await(predicate, timeout=5):

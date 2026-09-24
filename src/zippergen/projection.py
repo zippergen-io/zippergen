@@ -11,7 +11,7 @@ from dataclasses import replace, dataclass
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt, SpawnStmt, ForkStmt,
-    SpawnVisitStmt, InitSendStmt, BoundForkStmt,
+    InitSendStmt, BoundForkStmt,
     SendStmt, RecvStmt, SelfAssignStmt, IfRecvStmt, WhileRecvStmt,
     ParallelLocalStmt,
     Lifeline, LocalStmt, AnyStmt, Var, VarExpr, LitExpr,
@@ -155,7 +155,7 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
             interface = tuple(sorted(context.participants(body), key=lambda role: role.name))
             if owner is None and A not in interface:
                 return EmptyStmt()
-            if owner is not None and A != owner and A not in (retain or ()):
+            if owner is not None and A not in (retain or ()):
                 return EmptyStmt()
             names = tuple(sorted(field.name for field in fresh if field.lifeline == A))
             # Guard-only fields and declared but currently unused scratch cells
@@ -168,20 +168,17 @@ def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main
             retained = tuple(sorted(retain or (), key=lambda role: role.name))
             template = f"fresh-v2:{site}:{canonical_construct_key(stmt)}"
             new_roles = tuple(role for role in interface if role not in retained)
-            child = (_project(body, A, _Context(context._occupied, True),
-                              "main", site + ".0") if A in retained else None)
+            child = _project(body, A, _Context(context._occupied, True),
+                             "main", site + ".0")
             if A == owner:
                 instructions: list[LocalStmt] = [
                     InitSendStmt(owner, site, role, interface, retained, template, i == 0)
                     for i, role in enumerate(new_roles)
                 ]
-                if owner in retained:
-                    instructions.append(BoundForkStmt(
-                        A, site, cast(LocalStmt, child), names, template, interface,
-                        retained, owner, starts_visit=not new_roles,
-                    ))
-                elif not new_roles:
-                    instructions.append(SpawnVisitStmt(owner, site, interface, retained, template))
+                instructions.append(BoundForkStmt(
+                    A, site, child, names, template, interface,
+                    retained, owner, starts_visit=not new_roles,
+                ))
                 return cast(LocalStmt, seq(*instructions))
             return BoundForkStmt(A, site, cast(LocalStmt, child), names, template,
                                  interface, retained, owner)
@@ -304,10 +301,8 @@ def project(wf: Workflow, lifeline: Lifeline) -> LocalStmt:
         occupied |= {value.name for value in wf.ns.values() if isinstance(value, Var)}
     local = _project(wf.body, lifeline, _Context(frozenset(occupied), sessions))
     if sessions:
-        from zippergen.runtime import _collect_formula_guards
-        guards, _ = _collect_formula_guards(wf.body, wf.ns)
-        if guards:
-            raise ValueError("Experimental spawn does not yet support CPL guards")
+        from zippergen.session_cpl import compile_session_cpl
+        compile_session_cpl(wf)
     return local
 
 

@@ -130,9 +130,9 @@ spawn(Onboarding, at=HR, retain=(HR,),
 `Onboarding` is an ordinary `@fragment` with roles HR and Employee. HR initiates
 creation and retains its endpoint. Employee receives a fresh endpoint on every
 visit. The runtime installs Employee's already compiled role program there.
-Omit `retain` to allocate fresh endpoints for every child role; the initiator
-need not participate in the child. Without `at`, all child roles inherit their
-parent endpoints and no distinguished initiator is required.
+The initiator must be a child role listed explicitly in `retain`. Omitting
+`retain` or excluding the initiator is an error. Without `at`, all child roles
+inherit their parent endpoints and no distinguished initiator is required.
 
 There is no application binding expression or endpoint registry. Arbitrary
 recruitment of an existing service is not supported. Each endpoint keeps its
@@ -143,15 +143,48 @@ connect that worker to the appropriate external service or person.
 
 Each retained role computes the child session and binding from its own local
 spawn-site visit, then forks without receiving a descriptor from the initiator.
-The initiator computes the same binding and sends initialization only to fresh
-roles. Each send allocates its target endpoint; receiving it activates the
+The initiator computes the same binding, sends initialization only to fresh
+roles, and then always forks its own child role. Each send allocates its target endpoint; receiving it activates the
 child program. A retained child can send before the initiator reaches the
 spawn: the message waits at the future address, without creating a worker or
 running recipient code. There is no global activation barrier or child join.
 
-If there are no fresh roles, the initiator forks if retained; otherwise it
-executes a local visit marker. Empty initiated bodies still advance this local
-visit. The source syntax does not expose these internal instructions.
+If all child roles are retained, there are no initialization sends: everyone
+forks locally, just as with inherited spawn. Initiated empty bodies are invalid
+because the initiator must participate in the child.
+
+A dispatcher can participate trivially without adding any message or join:
+
+```python
+with spawn(at=Dispatcher, retain=(Dispatcher,)):
+    skip(Dispatcher)  # import skip from zippergen
+    Review()         # a fragment whose other roles get fresh endpoints
+```
+
+The dispatcher initializes the fresh roles, forks a child that immediately
+finishes, and continues its parent program independently of Review.
+
+### Endpoint lifetime
+
+An endpoint worker exits when all of its local sessions have finished, including
+retained descendants. It releases its thread and, in durable execution, its
+SQLite connection without waiting for other endpoints to finish or consume
+already-sent messages. A newly allocated worker must first receive its
+initialization; having no active session before that does not mean completion.
+Pending human decisions and external actions also keep the local session alive.
+
+Completed session controls are collected, and cells remain live only while a
+local session references them. Completion and activation records are retained
+for restart and duplicate suppression. A late initialization retry may briefly
+wake a worker to acknowledge the duplicate (or reject conflicting contents),
+but never starts the completed role again. Resume skips completed fresh workers
+unless initialization is pending. No schema or protocol-fingerprint change is
+required: existing session-state records contain the necessary evidence.
+
+Retirement does not impose admission limits or prune durable history, endpoint
+rows, or allocation records. In-memory runs also retain completed endpoint
+records until the run ends. It bounds idle worker threads, not total historical
+storage or the number of simultaneously active sessions.
 
 ### Initializing child state
 
@@ -226,7 +259,14 @@ Changing a workflow that already has durable sessions still requires the
 existing deployment compatibility checks. Do not resume its store using an
 older ZipperGen version that cannot decode session controls.
 
-Initiated-spawn templates now use `fresh-v2` to identify the independent local
+Initiated spawn now requires its initiator to be retained. Existing programs
+that already satisfy this rule keep their projections and durable identities.
+Programs using an external or freshly allocated initiator must be updated;
+finish their saved executions on the original runtime before changing source.
+Adding a trivial retained role changes the protocol and does not migrate a live
+store.
+
+Initiated-spawn templates use `fresh-v2` to identify the independent local
 fork semantics. Existing `fresh-v1` runs must finish with their original
 runtime, or be archived/reset before a fresh run. The workflow fingerprint
 rejects resuming their old controls under this semantics; adding a store table
@@ -258,15 +298,19 @@ repeat when several sessions are at the same instruction.
 
 - The implementation is experimental. Tests exercise the proposed semantics
   but do not constitute the paper's projection and progress proof.
-- CPL guards are rejected in workflows containing spawn. Cross-session causal
-  queries have not been assigned a semantics.
+- CPL guards use [current-session scope](cpl-spawn-design.md): `At[Reviewer]`
+  refers to this session's Reviewer. Children start empty histories even when
+  their cells are copied or their endpoint is shared. Same-session messages
+  carry causal summaries; SQLite persists monitors with local control.
+  Out-of-session roles are rejected. Cross-session queries and combining
+  spawn-aware CPL with pool handoffs are unsupported. Low-level atoms require
+  a semantic `version=`; field comparisons supply it automatically.
 - There is no join, wait, cancellation, arbitrary existing-endpoint recruitment,
   session limit or automatic backpressure. Bound intake while evaluating it.
 - The store remains local to the existing service. Spawn does not add remote
   transport or isolation between administrative domains.
-- Fresh endpoint workers remain hosted until the finite run completes, even
-  after their sessions finish. An unbounded intake therefore accumulates idle
-  worker threads and durable endpoint rows. Automatic worker retirement and
-  admission limits are not implemented yet.
+- Finished endpoint workers retire automatically. Durable endpoint rows and
+  creation/activation records remain; unbounded intake still needs storage
+  retention and admission policies.
 - External effects retain their existing replay window. Copying a work-item
   identity does not atomically claim that item in an external mailbox or queue.

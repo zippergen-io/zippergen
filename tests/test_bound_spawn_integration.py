@@ -8,7 +8,7 @@ from contextlib import closing
 
 import pytest
 
-from zippergen import Lifeline, Var, branch, fragment, human, llm, make_lifeline_router, parallel, pure, run, run_sqlite, spawn, workflow
+from zippergen import Lifeline, Var, branch, fragment, human, llm, make_lifeline_router, parallel, pure, run, run_sqlite, spawn, workflow, skip
 from zippergen.syntax import _ordered_workflow_lifelines
 
 Manager, Reviewer, IT = (Lifeline(name) for name in ("Manager", "Reviewer", "IT"))
@@ -90,6 +90,7 @@ def two_fresh_roles():
 
 @fragment
 def inherited_grandchild():
+    skip(Manager)
     Reviewer: value = five()
     with spawn(fresh="all"):
         Reviewer: result = twice(value)
@@ -97,18 +98,20 @@ def inherited_grandchild():
 
 @workflow
 def allocate_then_inherit():
-    spawn(inherited_grandchild, at=Manager)
+    spawn(inherited_grandchild, at=Manager, retain=(Manager,))
 
 
 @fragment
 def nested_allocated_child():
-    with spawn(at=Reviewer):
+    skip(Manager)
+    with spawn(at=Reviewer, retain=(Reviewer,)):
+        skip(Reviewer)
         IT: value = five()
 
 
 @workflow
 def allocate_then_allocate():
-    spawn(nested_allocated_child, at=Manager)
+    spawn(nested_allocated_child, at=Manager, retain=(Manager,))
 
 
 @fragment
@@ -117,19 +120,20 @@ def self_child():
 
 
 @workflow
-def owner_fresh_in_child():
-    spawn(self_child, at=Manager)
+def owner_retained_in_child():
+    spawn(self_child, at=Manager, retain=(Manager,))
 
 
 @fragment
 def fresh_cell_child():
+    skip(Manager)
     Reviewer: value = five()
 
 
 @workflow
 def fresh_cell_isolated():
     IT: value = seven()
-    spawn(fresh_cell_child, at=Manager)
+    spawn(fresh_cell_child, at=Manager, retain=(Manager,))
     return value @ IT
 
 
@@ -247,11 +251,11 @@ def test_fresh_role_can_allocate_nested_role(backend, tmp_path):
 
 
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
-def test_owner_role_can_be_allocated_fresh_in_child(backend, tmp_path):
+def test_all_retained_spawn_keeps_owner_endpoint(backend, tmp_path):
     events = []
-    _execute(owner_fresh_in_child, backend, tmp_path, trace=events)
-    descriptor = next(event["bindings"] for event in events if event["type"] == "init_send")
-    assert descriptor["Manager"] != "Manager"
+    _execute(owner_retained_in_child, backend, tmp_path, trace=events)
+    assert not any(event["type"] == "init_send" for event in events)
+    assert any(event["type"] == "fork" and event["endpoint"] == "Manager" for event in events)
     assert any(event["type"] == "act" and event.get("outputs", {}).get("value") == 5
                and event["session"] != "0" for event in events)
 

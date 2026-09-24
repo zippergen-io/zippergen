@@ -166,7 +166,9 @@ class FieldTerm:
                 return False
             return op(left, right)
 
-        return atom(predicate, src=src, version=f"field:{src}", fields=fields)
+        return atom(predicate, src=src, version=f"field:{src}", fields=fields,
+                    roles=(term.lifeline_name for term in (self, other)
+                           if isinstance(term, FieldTerm) and term.lifeline_name is not None))
 
     def __eq__(self, other: object) -> AtomicFormula:  # type: ignore[override]
         return self._compare(other, "==", operator.eq)
@@ -219,6 +221,7 @@ class AtomicFormula(Formula):
     version: str = ""
     fields: frozenset[str] | None = None
     accepts_event_context: bool = False
+    roles: frozenset[str] = frozenset()
 
     # Use object identity so that two separately-created atom() calls are
     # distinct subformulas even when wrapping the same function.
@@ -324,6 +327,7 @@ def atom(
     *,
     version: str = "",
     fields: Iterable[str] | None = None,
+    roles: Iterable[str] = (),
 ) -> AtomicFormula:
     """Wrap a Python callable as an atomic CPL predicate.
 
@@ -335,6 +339,8 @@ def atom(
     fields : names read remotely through the event context. For a low-level
              two-argument predicate, omitting this preserves access to all
              fields.
+    roles : static remote roles read by a low-level context predicate. These
+            declarations are checked against the current session interface.
     """
     return AtomicFormula(
         fn=fn,
@@ -342,6 +348,7 @@ def atom(
         version=str(version),
         fields=None if fields is None else frozenset(str(field) for field in fields),
         accepts_event_context=_accepts_event_context(fn),
+        roles=frozenset(str(role) for role in roles),
     )
 
 

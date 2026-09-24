@@ -18,17 +18,18 @@ from typing import TYPE_CHECKING, cast
 
 from zippergen.locator import _children
 from zippergen.syntax import (
-    EmptyStmt, ForkStmt, SpawnVisitStmt, InitSendStmt,
+    EmptyStmt, ForkStmt, InitSendStmt,
     BoundForkStmt, IfRecvStmt, WhileRecvStmt, LocalStmt, VarExpr,
 )
 from zippergen.value_codec import encode_value, decode_value
+from zippergen.monitor import MonitorState
 
 if TYPE_CHECKING:
     from zippergen.runtime import PendingExternal
 
 
 def has_forks(stmt) -> bool:
-    return isinstance(stmt, (ForkStmt, SpawnVisitStmt, InitSendStmt,
+    return isinstance(stmt, (ForkStmt, InitSendStmt,
                              BoundForkStmt)) or any(
                                  has_forks(c) for c in _children(stmt))
 
@@ -88,6 +89,15 @@ class Session:
     role: str | None = None
     role_endpoints: dict[str, str] = field(default_factory=dict)
     template: str | None = None
+    monitor: MonitorState | None = field(default=None, repr=False)
+    cpl_saved: dict | None = field(default=None, repr=False)
+    cpl_layout: str | None = None
+
+    def cpl_snapshot(self):
+        if self.monitor is None:
+            return self.cpl_saved
+        return {"session": self.name, "layout": self.cpl_layout,
+                "state": self.monitor.snapshot_state()}
 
 
 class CellEnv(MutableMapping):
@@ -131,23 +141,43 @@ class ScopedChannel:
     def route(self, channel):
         return channel if self.session.name == "0" else f"session:{self.session.name}|{channel}"
 
-    def put(self, sender, receiver, channel, *args, **kwargs):
+    def put(self, sender, receiver, channel, values, vc=None, view=None, field_view=None):
+        if self.session.monitor is not None:
+            field_view = {"session": self.session.name, "layout": self.session.cpl_layout,
+                          "fields": field_view}
         return self.channel.put(self.session.role_endpoints.get(sender, sender),
                                 self.session.role_endpoints.get(receiver, receiver),
                                 self.route(f"{sender}>{receiver}|{channel}")
-                                if self.state.bound else self.route(channel), *args, **kwargs)
+                                if self.state.bound else self.route(channel), values, vc, view, field_view)
+
+    def _checked_item(self, item):
+        if item is None:
+            return None
+        seq, values, vc, view, fields = item
+        if self.session.monitor is not None:
+            if (not isinstance(fields, dict)
+                    or fields.get("session") != self.session.name
+                    or fields.get("layout") != self.session.cpl_layout
+                    or not isinstance(fields.get("fields"), dict)):
+                raise ValueError("CPL message has a different session or formula layout")
+            fields = fields["fields"]
+        elif any(value is not None for value in (vc, view, fields)):
+            raise ValueError("CPL message received by an unmonitored session")
+        return seq, values, vc, view, fields
 
     def try_get(self, sender, receiver, channel):
-        return self.channel.try_get(self.session.role_endpoints.get(sender, sender),
+        return self._checked_item(self.channel.try_get(self.session.role_endpoints.get(sender, sender),
                                     self.session.role_endpoints.get(receiver, receiver),
                                     self.route(f"{sender}>{receiver}|{channel}")
-                                    if self.state.bound else self.route(channel))
+                                    if self.state.bound else self.route(channel)))
 
     def get(self, sender, receiver, channel, **kwargs):
-        return self.channel.get(self.session.role_endpoints.get(sender, sender),
+        item = self._checked_item(self.channel.get(self.session.role_endpoints.get(sender, sender),
                                 self.session.role_endpoints.get(receiver, receiver),
                                 self.route(f"{sender}>{receiver}|{channel}")
-                                if self.state.bound else self.route(channel), **kwargs)
+                                if self.state.bound else self.route(channel), **kwargs))
+        assert item is not None  # Blocking get returns a message or raises.
+        return item
 
     def _record(self, descriptor):
         conn = getattr(self.channel, "conn", None)
@@ -308,6 +338,25 @@ class SessionState:
             return False
         return all(isinstance(s.residual, EmptyStmt) for s in sessions)
 
+    @property
+    def can_retire(self) -> bool:
+        """No future local work, under fresh allocation/retention semantics.
+
+        An empty fresh worker has not necessarily received its initialization.
+        Once activated, however, no unrelated session can recruit this endpoint:
+        all further retained forks must originate in its own unfinished controls.
+        Keep activation records after retirement to acknowledge repeated init.
+        """
+        if not self.bound or self.pending_session is not None:
+            return False
+        try:
+            sessions = tuple(self.sessions.values())
+        except RuntimeError:
+            return False  # Supervisor observed a concurrent session change.
+        activated = any(s.name == "0" for s in sessions) or bool(self.activations)
+        return activated and all(isinstance(s.residual, EmptyStmt) and not s.waiting
+                                 for s in sessions)
+
     def validate_descriptor(self, descriptor, template, role, *, expected_child=None,
                             retained=False):
         if not isinstance(descriptor, dict) or descriptor.get("template") != template:
@@ -330,6 +379,8 @@ class SessionState:
             raise ValueError("Bound-spawn descriptor has invalid role binding")
         if set(descriptor.get("retain", ())) != {member.name for member in installed.retain}:
             raise ValueError("Bound-spawn descriptor has invalid retained roles")
+        if descriptor.get("owner") not in descriptor.get("retain", ()):
+            raise ValueError("Spawn initiator must be a retained child role")
         if retained != (role in descriptor.get("retain", ())):
             raise ValueError("Bound-spawn retention disagrees with descriptor")
         for member, endpoint in binding.items():
@@ -404,11 +455,11 @@ class SessionState:
 
     def step(self, env, channel, ns, llm_backend, human_backend, trace, stop,
              *, durable=False, assistant_backend=None, resolved=None, human_handler=None,
-             monitor=None, formula_conditions=None
+             monitor=None, formula_conditions=None, cpl_plans=None, role=None
              ) -> tuple[SessionState | EmptyStmt | PendingExternal, bool]:
         from zippergen.runtime import _step, PendingExternal
         if monitor is not None or formula_conditions:
-            raise ValueError("CPL monitoring is not supported in spawn sessions")
+            raise ValueError("Endpoint-wide CPL monitors are invalid for spawn; use session monitor plans")
         if resolved is None and self.invite_turn and self.accept_invitation(channel):
             self.invite_turn = False
             return self, True
@@ -424,6 +475,27 @@ class SessionState:
             session = self.sessions[name]
             if isinstance(session.residual, EmptyStmt):
                 continue
+            conditions = {}
+            if cpl_plans:
+                plan = cpl_plans["root" if name == "0" else self._site_from_session(name)]
+                conditions = plan.conditions
+                if session.monitor is None and plan.formulas:
+                    local_role = session.role or role
+                    if local_role is None:
+                        raise ValueError("CPL session requires a static role")
+                    session.monitor = plan.monitor(local_role)
+                    session.cpl_layout = plan.layout
+                    saved = session.cpl_saved
+                    if saved is not None:
+                        if saved.get("session") != name or saved.get("layout") != plan.layout:
+                            raise ValueError("Saved CPL session or formula layout changed")
+                        assert session.monitor is not None
+                        session.monitor.restore_state(saved["state"])
+                        session.cpl_saved = None
+                    elif session.steps:
+                        raise ValueError("Live session has no saved CPL history")
+            elif session.cpl_saved is not None:
+                raise ValueError("Saved CPL session requires its monitor plan")
             local_env = CellEnv(env, self.cells, session.bindings)
             scoped = ScopedChannel(channel, self, session, env, human_handler)
             def session_trace(event):
@@ -437,7 +509,7 @@ class SessionState:
                     trace(event)
             result, progressed = _step(
                 session.residual, local_env, scoped, ns, llm_backend, human_backend,
-                None, session_trace if trace else None, {}, stop, durable=durable,
+                session.monitor, session_trace if trace else None, conditions, stop, durable=durable,
                 assistant_backend=assistant_backend, resolved=resolved,
             )
             if isinstance(result, PendingExternal):
@@ -479,13 +551,17 @@ class SessionState:
                              s.residual),
                          "bindings": s.bindings, "role_endpoints": s.role_endpoints,
                          "visits": s.visits, "steps": s.steps,
-                         "waiting": encode_value(s.waiting)} for s in self.sessions.values()]}
+                         "waiting": encode_value(s.waiting),
+                         **({"cpl": s.cpl_snapshot()} if s.cpl_snapshot() is not None else {})}
+                        for s in self.sessions.values()]}
         return {"k": "sessions", "v": 1, "cursor": self.cursor,
                 "cells": encode_value(self.cells),
                 "sessions": [
                     {"name": s.name, "control": encode_control(root, s.residual),
                      "bindings": s.bindings, "visits": s.visits, "steps": s.steps,
-                     "waiting": encode_value(s.waiting)} for s in self.sessions.values()]}
+                     "waiting": encode_value(s.waiting),
+                     **({"cpl": s.cpl_snapshot()} if s.cpl_snapshot() is not None else {})}
+                    for s in self.sessions.values()]}
 
     @staticmethod
     def _site_from_session(name):
@@ -519,6 +595,7 @@ class SessionState:
                     name, residual, dict(entry["bindings"]), dict(entry["visits"]),
                     entry["steps"], cast(dict[str, dict], waiting), role,
                     dict(entry["role_endpoints"]), token,
+                    cpl_saved=entry.get("cpl"),
                 )
             cells = decode_value(data["cells"])
             if not isinstance(cells, dict):
@@ -547,7 +624,8 @@ class SessionState:
             if isinstance(residual, SessionState) or not isinstance(waiting, dict):
                 raise ControlError("Invalid nested session control")
             sessions[name] = Session(name, residual, entry["bindings"], entry["visits"],
-                                     entry["steps"], cast(dict[str, dict], waiting))
+                                     entry["steps"], cast(dict[str, dict], waiting),
+                                     cpl_saved=entry.get("cpl"))
         if "0" not in sessions:
             raise ControlError("Missing root session")
         cells = decode_value(data["cells"])

@@ -297,7 +297,7 @@ def _plain(value):
     return str(value)
 
 
-def program_fingerprint(local_programs: Mapping[str, object], *, templates=None) -> str:
+def program_fingerprint(local_programs: Mapping[str, object], *, templates=None, session_cpl=None) -> str:
     """Identify the projected code durable state may be resumed against.
 
     The stored environment and control paths must mean the same thing to the
@@ -310,6 +310,8 @@ def program_fingerprint(local_programs: Mapping[str, object], *, templates=None)
     shape: dict[str, object] = {
         role: _shape(program) for role, program in sorted(local_programs.items())
     }
+    if session_cpl:
+        shape["__session_cpl_v1__"] = {key: plan.layout for key, plan in sorted(session_cpl.items())}
     if templates:
         shape["__spawn_templates__"] = {
             f"{site}:{role}": {

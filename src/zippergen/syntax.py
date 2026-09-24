@@ -669,6 +669,8 @@ class SpawnStmt:
             object.__setattr__(self, "retain", retain)
             if len(set(retain)) != len(retain) or not set(retain) <= roles:
                 raise ValueError("spawn retain must contain distinct child roles")
+            if self.owner not in retain:
+                raise ValueError("spawn initiator must be a retained child role; include at in retain")
             if any(field.lifeline not in retain for field in self.fresh):
                 raise ValueError("spawn fresh may select retained roles only")
 
@@ -680,16 +682,6 @@ class ForkStmt:
     site: str
     body: LocalStmt
     fresh: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class SpawnVisitStmt:
-    """An initiator with no initialization sends or child fork visits the site."""
-    owner: Lifeline
-    site: str
-    interface: tuple[Lifeline, ...]
-    retain: tuple[Lifeline, ...]
-    template: str
 
 
 @dataclass(frozen=True)
@@ -843,7 +835,7 @@ class ParallelLocalStmt:
 LocalStmt = Union[
     EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelLocalStmt, ForkStmt,
-    SpawnVisitStmt, InitSendStmt, BoundForkStmt,
+    InitSendStmt, BoundForkStmt,
 ]
 
 # Union covering both global (Stmt) and local (LocalStmt) programs.
@@ -852,12 +844,12 @@ LocalStmt = Union[
 AnyStmt = Union[
     EmptyStmt, MsgStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelStmt, ParallelLocalStmt, SpawnStmt, ForkStmt,
-    SpawnVisitStmt, InitSendStmt, BoundForkStmt,
+    InitSendStmt, BoundForkStmt,
 ]
 
 
 def contains_initiated_spawn(stmt: AnyStmt) -> bool:
-    """Include empty initiated bodies, which have no child-role templates."""
+    """Whether the workflow uses explicit fresh-participant creation."""
     match stmt:
         case SpawnStmt(owner=owner, body=body):
             return owner is not None or contains_initiated_spawn(body)
@@ -1151,13 +1143,13 @@ def _participation_set(
             return frozenset({b}) | _participants(p, memo) | _participants(q, memo)
         case SpawnStmt(body=body, owner=owner, retain=retain):
             if owner is not None:
-                return frozenset(retain or ()) | frozenset({owner})
+                return frozenset(retain or ())
             return _participants(body, memo)
         case ForkStmt(body=body):
             return _participants(body, memo)
         case BoundForkStmt(role=role):
             return frozenset({role})
-        case SpawnVisitStmt(owner=owner) | InitSendStmt(owner=owner):
+        case InitSendStmt(owner=owner):
             return frozenset({owner})
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
             branch_participants: frozenset[Lifeline] = frozenset()
@@ -1212,8 +1204,6 @@ def occurring_variable_declarations(stmt: AnyStmt) -> frozenset[Var]:
             return occurring_variable_declarations(body)
         case ForkStmt(body=body) | BoundForkStmt(body=body):
             return occurring_variable_declarations(body)
-        case SpawnVisitStmt():
-            return frozenset()
         case InitSendStmt():
             return frozenset()
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
@@ -1334,10 +1324,6 @@ def pp(node: AnyStmt, indent: int = 0) -> str:
             return f"{pad}spawn {details}:\n" + pp(body, indent + 1)
         case ForkStmt(body=body, site=site, fresh=fresh):
             return f"{pad}fork {site} fresh={fresh}:\n" + pp(body, indent + 1)
-        case SpawnVisitStmt(owner=owner, site=site, interface=interface, retain=retain):
-            roles = ", ".join(role.name for role in interface)
-            kept = ", ".join(role.name for role in retain)
-            return f"{pad}visit spawn {site} @{owner.name} interface=({roles}) retain=({kept})"
         case InitSendStmt(owner=owner, site=site, recipient=recipient):
             return f"{pad}initialize {site} {owner.name} → {recipient.name}"
         case BoundForkStmt(role=role, site=site, body=body, fresh=fresh):

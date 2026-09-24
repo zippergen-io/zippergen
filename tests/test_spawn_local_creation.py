@@ -6,13 +6,13 @@ import threading
 
 import pytest
 
-from zippergen import Lifeline, Var, effect, fragment, pure, run, run_sqlite, spawn, workflow
+from zippergen import Lifeline, Var, effect, fragment, pure, run, run_sqlite, spawn, workflow, skip
 from zippergen.channels import InProcessChannel
 from zippergen.control import program_fingerprint
 from zippergen.projection import project, project_templates
 from zippergen.sessions import fresh_endpoint
 from zippergen.store import open_store, open_store_readonly
-from zippergen.syntax import BoundForkStmt, SpawnVisitStmt
+from zippergen.syntax import BoundForkStmt
 
 Sender, Initiator, Worker, Auditor = map(Lifeline, ["Sender", "Initiator", "Worker", "Auditor"])
 request = Var("request", int, default=7)
@@ -35,6 +35,7 @@ def increment(value: int) -> int:
 
 @fragment
 def work():
+    skip(Initiator)
     Sender(request) >> Worker(request)
     Worker: reply = increment(request)
     Worker(reply) >> Sender(reply)
@@ -43,7 +44,7 @@ def work():
 @workflow
 def early_retained():
     Initiator: marker = wait_for_early_send()
-    spawn(work, at=Initiator, retain=(Sender,), fresh="all")
+    spawn(work, at=Initiator, retain=(Sender, Initiator), fresh="all")
     Sender: request = increment(request)
 
 
@@ -56,7 +57,7 @@ def nested_work():
 @workflow
 def nested_early_retained():
     Initiator: marker = wait_for_early_send()
-    spawn(nested_work, at=Initiator, retain=(Sender,), fresh="all")
+    spawn(nested_work, at=Initiator, retain=(Sender, Initiator), fresh="all")
     Sender: request = increment(request)
 
 
@@ -64,31 +65,27 @@ def nested_early_retained():
 def repeated_early_retained():
     while (request < 10) @ Sender:
         Initiator: marker = wait_for_early_send()
-        spawn(work, at=Initiator, retain=(Sender,), fresh="all")
+        spawn(work, at=Initiator, retain=(Sender, Initiator), fresh="all")
         Sender: request = increment(request)
 
 
 @fragment
 def two_workers():
+    skip(Initiator)
     Worker: reply = increment(1)
     Auditor: reply = increment(2)
 
 
 @workflow
 def allocate_two():
-    spawn(two_workers, at=Initiator)
+    spawn(two_workers, at=Initiator, retain=(Initiator,))
 
 
 @workflow
 def retained_only():
-    with spawn(at=Initiator, retain=(Sender,), fresh="all"):
+    with spawn(at=Initiator, retain=(Sender, Initiator), fresh="all"):
+        skip(Initiator)
         Sender: reply = increment(request)
-
-
-@workflow
-def initiated_empty():
-    with spawn(at=Initiator):
-        pass
 
 
 @workflow
@@ -145,7 +142,7 @@ def test_retained_send_precedes_initiator_and_allocation(backend, wf, tmp_path, 
                      if e["type"] == "act" and e.get("lifeline") == "Worker")
     assert replies == ([8, 9, 10] if wf is repeated_early_retained else [8])
     forks = [e for e in events if e["type"] == "fork"]
-    assert len(forks) == (1 if wf is early_retained else 3)
+    assert len(forks) == (2 if wf is early_retained else 5 if wf is nested_early_retained else 6)
     assert forks[0]["child_session"] == events[init]["child_session"]
     if wf is repeated_early_retained:
         assert {e["child_session"] for e in forks} == {
@@ -154,21 +151,18 @@ def test_retained_send_precedes_initiator_and_allocation(backend, wf, tmp_path, 
 
 
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
-@pytest.mark.parametrize("wf", [retained_only, initiated_empty, retained_initiator_only])
+@pytest.mark.parametrize("wf", [retained_only, retained_initiator_only])
 def test_creation_without_new_roles(wf, backend, tmp_path):
     events = []
     if backend == "memory":
-        roots = [Initiator] if wf is initiated_empty else ([Sender] if wf is retained_initiator_only else [Sender, Initiator])
+        roots = [Sender] if wf is retained_initiator_only else [Sender, Initiator]
         run(wf, roots, {}, trace=events.append, timeout=5)
     else:
         run_sqlite(wf, store_path=str(tmp_path / "empty.sqlite"), trace=events.append, timeout=5)
     assert not any(e["type"] in {"init_send", "init_recv"} for e in events)
-    if wf is retained_initiator_only:
-        assert isinstance(project(wf, Sender), BoundForkStmt)
-        assert not any(e["type"] == "spawn_visit" for e in events)
-    else:
-        assert isinstance(project(wf, Initiator), SpawnVisitStmt)
-        assert len([e for e in events if e["type"] == "spawn_visit"]) == 1
+    owner = Sender if wf is retained_initiator_only else Initiator
+    assert isinstance(project(wf, owner), BoundForkStmt)
+    assert not any(e["type"] == "spawn_visit" for e in events)
 
 
 # A real process exit tests transaction rollback and fresh-process recovery.
@@ -241,7 +235,7 @@ def test_crash_windows_preserve_independent_creation(tmp_path, phase):
         assert all(endpoint == fresh_endpoint(child, role) for child, role, endpoint in rows)
         assert all(row in rows for row in allocated)
         assert conn.execute("SELECT COUNT(*) FROM spawn_instances").fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM spawn_activations").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM spawn_activations").fetchone()[0] == 3
         assert conn.execute("SELECT COUNT(*) FROM outstanding_messages").fetchone()[0] == 0
 
 

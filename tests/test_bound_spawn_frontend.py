@@ -2,12 +2,12 @@
 
 import pytest
 
-from zippergen import Lifeline, Var, all_except, branch, fragment, parallel, pure, spawn, workflow
+from zippergen import Lifeline, Var, all_except, branch, fragment, parallel, pure, spawn, workflow, skip
 from zippergen.availability import workflow_availability_error
 from zippergen.control import program_fingerprint
 from zippergen.projection import project, project_templates
 from zippergen.syntax import (
-    SpawnVisitStmt, BoundForkStmt, InitSendStmt,
+    BoundForkStmt, InitSendStmt,
     SeqStmt, SpawnStmt, _all_workflow_lifelines, participation_set,
 )
 
@@ -92,7 +92,8 @@ def test_inherited_default_and_explicit_all_roles_remain_initiator_free():
 def test_fresh_endpoint_cannot_read_preexisting_default():
     @workflow
     def invalid():
-        with spawn(at=Manager, retain=(), fresh="all"):
+        with spawn(at=Manager, retain=(Manager,), fresh="all"):
+            skip(Manager)
             Reviewer: approval = use_stale(stale)
 
     assert "not definitely have" in workflow_availability_error(invalid)
@@ -173,29 +174,61 @@ def reviewer_only():
     Reviewer: approval = approve("request")
 
 
-@workflow
-def owner_absent_from_child():
-    spawn(reviewer_only, at=Manager)
-
-
 @fragment
 def manager_only():
     Manager: approval = approve("request")
 
 
-@workflow
-def owner_fresh_in_child():
-    spawn(manager_only, at=Manager)
+@pytest.mark.parametrize("retained", [None, (), (Reviewer,)])
+def test_initiator_must_be_retained(retained):
+    with pytest.raises(ValueError, match="initiator must be a retained child role"):
+        SpawnStmt(allocated.body.body, owner=Manager, retain=retained)
 
 
-def test_owner_absent_and_owner_fresh_get_parent_creation_code():
-    absent = _leaves(project(owner_absent_from_child, Manager))
-    assert [type(item) for item in absent] == [InitSendStmt]
-    assert absent[-1].recipient == Reviewer
-    fresh = _leaves(project(owner_fresh_in_child, Manager))
-    assert [type(item) for item in fresh] == [InitSendStmt]
-    assert fresh[-1].recipient == Manager
-    assert project_templates(owner_fresh_in_child)[("0", "Manager")].fresh_endpoint
+@pytest.mark.parametrize("mode", ["()", "'all'", "all_except(Reviewer.request)"])
+def test_initiator_retention_checked_for_every_freshness_form(mode, tmp_path):
+    from zippergen.workflow_io import load_workflow_spec
+    path = tmp_path / "invalid.py"
+    path.write_text("from zippergen import *\n"
+                    "Manager, Reviewer = Lifeline('Manager'), Lifeline('Reviewer')\n"
+                    "request = Var('request', str, default='request')\n"
+                    "@workflow\ndef bad():\n"
+                    f"    with spawn(at=Manager, retain=(Reviewer,), fresh={mode}):\n"
+                    "        Manager(request) >> Reviewer(request)\n")
+    with pytest.raises(ValueError, match="initiator must be a retained child role"):
+        load_workflow_spec(str(path) + ':bad')
+
+
+def test_initiator_must_occur_in_child():
+    with pytest.raises(ValueError, match="distinct child roles"):
+        @workflow
+        def invalid():
+            spawn(reviewer_only, at=Manager, retain=(Manager,))
+
+
+def test_empty_initiated_child_rejected_but_inherited_empty_allowed():
+    with pytest.raises(ValueError, match="distinct child roles"):
+        @workflow
+        def invalid():
+            with spawn(at=Manager, retain=(Manager,)):
+                pass
+    @workflow
+    def inherited_empty():
+        with spawn():
+            pass
+    assert inherited_empty.body.owner is None
+
+
+def test_dispatcher_uses_trivial_retained_child_role():
+    @workflow
+    def dispatch():
+        with spawn(at=Manager, retain=(Manager,)):
+            skip(Manager)
+            reviewer_only()
+    code = _leaves(project(dispatch, Manager))
+    assert [type(node) for node in code] == [InitSendStmt, BoundForkStmt]
+    assert code[-1].body.__class__.__name__ == "SkipStmt"
+    assert participation_set(dispatch.body) == frozenset({Manager})
 
 
 def test_at_requires_lifeline_and_obsolete_bindings_keyword_is_rejected():

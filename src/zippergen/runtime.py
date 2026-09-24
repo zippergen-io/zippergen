@@ -37,7 +37,7 @@ from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     ParallelStmt, ParallelLocalStmt, SpawnStmt, ForkStmt,
-    SpawnVisitStmt, InitSendStmt, BoundForkStmt,
+    InitSendStmt, BoundForkStmt,
     VarExpr, LitExpr, Var, Json,
     LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
@@ -653,16 +653,6 @@ def _step(
                        "fresh": list(stmt.fresh)})
             return EmptyStmt(), True
 
-        case SpawnVisitStmt():
-            if not isinstance(ch, ScopedChannel):
-                raise RuntimeError("Bound spawn requires an endpoint session scheduler")
-            descriptor = ch.begin_spawn(stmt)
-            if trace:
-                trace({"type": "spawn_visit", "lifeline": stmt.owner.name,
-                       "site": stmt.site, "child_session": descriptor["child"],
-                       "bindings": descriptor["bindings"]})
-            return EmptyStmt(), True
-
         case InitSendStmt():
             if not isinstance(ch, ScopedChannel):
                 raise RuntimeError("Bound spawn requires an endpoint session scheduler")
@@ -708,13 +698,24 @@ def _step(
                 return EmptyStmt(), True
             if (isinstance(action, HumanAction) and action.required
                     and isinstance(ch, ScopedChannel) and ch.human_handler is not None):
-                result = ch.human_handler(ch, stmt, env, trace)
+                completed = []
+                def human_trace(event):
+                    if event["type"] == "act":
+                        completed.append(event)
+                    elif trace:
+                        trace(event)
+                result = ch.human_handler(ch, stmt, env, human_trace if trace else None)
                 if result is None:
                     # Publishing a request is itself a committed step. Do not
                     # let another branch start an external call and roll back
                     # that request while retaining its in-memory reference.
                     return stmt, ch.state.dirty
                 env.update(result)
+                if monitor is not None:
+                    monitor.on_event("act", env)
+                if trace:
+                    for event in completed:
+                        trace({**event, **_monitor_trace_fields(monitor)})
                 return EmptyStmt(), True
             in_vals = tuple(_eval(x, env) for x in ins)
             named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
@@ -1318,10 +1319,10 @@ def _exec(
 # ---------------------------------------------------------------------------
 
 def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, human_backend, assistant_backend,
-                 monitor, trace, formula_conditions, stop):
+                 monitor, trace, formula_conditions, stop, cpl_plans=None):
     try:
         from zippergen.sessions import SessionState, has_forks
-        if has_forks(local_stmt):
+        if has_forks(local_stmt) or cpl_plans:
             state = SessionState.start(local_stmt)
             while not isinstance(state, EmptyStmt):
                 if stop.is_set():
@@ -1330,6 +1331,7 @@ def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, human_backend
                     env, ch, ns, llm_backend, human_backend, trace, stop,
                     assistant_backend=assistant_backend,
                     monitor=monitor, formula_conditions=formula_conditions,
+                    cpl_plans=cpl_plans, role=threading.current_thread().name,
                 )
                 assert isinstance(next_state, (SessionState, EmptyStmt))
                 state = next_state
@@ -1363,7 +1365,7 @@ def _condition_formula(condition, ns: dict) -> _Formula | None:
     return raw if isinstance(raw, _Formula) else None
 
 
-def _collect_formula_guards(stmt, ns: dict) -> tuple[list, dict[int, _Formula]]:
+def _collect_formula_guards(stmt, ns: dict, *, descend_spawn=True) -> tuple[list, dict[int, _Formula]]:
     guards: list = []
     condition_formulas: dict[int, _Formula] = {}
     # Walks the global program only; IfRecvStmt/WhileRecvStmt never appear in wf.body.
@@ -1387,7 +1389,8 @@ def _collect_formula_guards(stmt, ns: dict) -> tuple[list, dict[int, _Formula]]:
                 walk(p1)
                 walk(p2)
             case SpawnStmt(body=body):
-                walk(body)
+                if descend_spawn:
+                    walk(body)
             case ParallelStmt(branches=branches):
                 for branch in branches:
                     walk(branch)
@@ -1429,15 +1432,17 @@ def _run_fresh(wf, lifelines, initial_envs, templates,
     from zippergen.sessions import validate_root_endpoint
     from zippergen.sqlite_runner import _default_env, _workflow_result
 
+    from zippergen.session_cpl import compile_session_cpl
+    cpl_plans = compile_session_cpl(wf)
     roots = {role.name: project(wf, role) for role in lifelines}
     root_bindings = {role.name: validate_root_endpoint(role.name) for role in lifelines}
-    configured = set(root_bindings.values())
+    configured = {endpoint: role for role, endpoint in root_bindings.items()}
     channels = InProcessChannel()
     stop = threading.Event()
     finished = threading.Event()
     states = {}
     results = {}
-    threads = []
+    threads: dict[str, threading.Thread] = {}
     dispatcher = None
     if getattr(human_backend, "requires_main_thread", False):
         from zippergen.human_backends import _MainThreadHumanDispatcher
@@ -1460,7 +1465,7 @@ def _run_fresh(wf, lifelines, initial_envs, templates,
                             ), ztype,
                         )
             root = roots.get(endpoint, EmptyStmt())
-            state = SessionState.start(
+            state = states.get(endpoint) or SessionState.start(
                 root, role=role, endpoint=endpoint,
                 root_bindings=root_bindings, templates=templates, keep_alive=True,
             )
@@ -1470,8 +1475,10 @@ def _run_fresh(wf, lifelines, initial_envs, templates,
                     raise WorkflowCancelled("Workflow cancelled")
                 _next, progressed = state.step(
                     env, channels, wf.ns, llm_backend, human_backend, trace, stop,
-                    assistant_backend=assistant_backend,
+                    assistant_backend=assistant_backend, cpl_plans=cpl_plans,
                 )
+                if state.can_retire and endpoint not in channels.pending_initialization_endpoints():
+                    break
                 if not progressed:
                     finished.wait(0.01)
             results[endpoint] = env
@@ -1482,7 +1489,7 @@ def _run_fresh(wf, lifelines, initial_envs, templates,
     def start_worker(endpoint, static_role):
         thread = threading.Thread(target=worker, args=(endpoint, static_role),
                                   name=static_role, daemon=True)
-        threads.append(thread)
+        threads[endpoint] = thread
         thread.start()
 
     for endpoint in sorted(configured):
@@ -1493,13 +1500,20 @@ def _run_fresh(wf, lifelines, initial_envs, templates,
         while not finished.is_set():
             if stop.is_set():
                 break
+            for endpoint, thread in list(threads.items()):
+                if not thread.is_alive():
+                    thread.join()
+                    del threads[endpoint]
             for _child, role, endpoint in channels.spawn_allocations():
                 if endpoint not in configured:
-                    configured.add(endpoint)
+                    configured[endpoint] = role
                     start_worker(endpoint, role)
+            for endpoint in channels.pending_initialization_endpoints():
+                if endpoint in configured and endpoint not in threads:
+                    start_worker(endpoint, configured[endpoint])
             generation = channels.activity_generation()
             quiet = (len(states) == len(configured)
-                     and all(state.done for state in states.values())
+                     and all(state.can_retire for state in states.values())
                      and not channels.has_pending_messages())
             if quiet and generation == channels.activity_generation():
                 finished.set()
@@ -1516,7 +1530,7 @@ def _run_fresh(wf, lifelines, initial_envs, templates,
             finished.set()
             if dispatcher is not None:
                 dispatcher.cancel_pending()
-        for thread in threads:
+        for thread in threads.values():
             thread.join(timeout=1)
     for endpoint, outcome in results.items():
         if isinstance(outcome, BaseException):
@@ -1593,7 +1607,9 @@ def run(
     threads: list[threading.Thread] = []
     result_boxes: dict[str, list] = {}
 
-    monitors, formula_conditions = _build_formula_monitors(wf, lifelines)
+    from zippergen.session_cpl import compile_session_cpl
+    cpl_plans = compile_session_cpl(wf)
+    monitors, formula_conditions = ({}, {}) if cpl_plans else _build_formula_monitors(wf, lifelines)
 
     for ll in lifelines:
         local_stmt = project(wf, ll)
@@ -1626,7 +1642,7 @@ def run(
         def make_target(stmt, e, b, mon):
             def target():
                 _thread_body(stmt, e, channels, wf.ns, b, llm_backend, human_backend, assistant_backend,
-                             mon, trace, formula_conditions, stop)
+                             mon, trace, formula_conditions, stop, cpl_plans)
             return target
 
         t = threading.Thread(

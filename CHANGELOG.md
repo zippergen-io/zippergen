@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Initiated spawn now requires `at` to be a retained child role. The initiator
+  initializes fresh roles, then always forks; the separate visit marker is
+  removed. Use a retained `skip(Dispatcher)` role for fire-and-forget dispatch.
+  Existing spawns already satisfying this restriction keep their durable identity.
+
+- CPL now supports spawn with current-session role scope. Each session-role has
+  an independent monitor; children start empty histories and message summaries
+  are checked against the session and formula layout. SQLite commits monitor
+  state with session control and cells. Missing roles fail validation; pool
+  causal handoffs with spawn-aware CPL remain unsupported. Low-level atoms need
+  semantic versions, and can declare remote references with `roles=`.
+
+- Completed endpoint workers now retire while other sessions continue, releasing
+  their threads and SQLite connections. Retained descendants keep the endpoint
+  alive; uninitialized fresh endpoints still wait for activation. Durable resume
+  skips finished endpoints, while late initialization retries are acknowledged
+  without rerunning role code. Completion and activation records remain stored.
+
 - Retained roles in initiated spawn now derive child bindings locally and fork
   independently, without descriptor messages. Messages may queue before fresh
   endpoints are allocated; each initialization send allocates only its target.

@@ -461,7 +461,9 @@ def _workflow_state_check(workflow: Workflow, store_path: Path) -> dict[str, obj
     """Reject a protocol update before publishing it against existing state."""
 
     from zippergen.control import program_fingerprint
-    from zippergen.projection import project
+    from zippergen.projection import project, project_templates
+    from zippergen.session_cpl import compile_session_cpl
+    from zippergen.syntax import contains_initiated_spawn
 
     name = "workflow state compatibility"
     if not store_path.exists():
@@ -470,7 +472,9 @@ def _workflow_state_check(workflow: Workflow, store_path: Path) -> dict[str, obj
         fingerprint = program_fingerprint({
             role.name: project(workflow, role)
             for role in _ordered_workflow_lifelines(workflow)
-        })
+        }, templates=(project_templates(workflow)
+                      if contains_initiated_spawn(workflow.body) else None),
+           session_cpl=compile_session_cpl(workflow))
         conn = open_store_readonly(store_path)
         try:
             claimed = check_workflow_identity(conn, workflow.name, fingerprint)

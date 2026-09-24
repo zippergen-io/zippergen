@@ -807,8 +807,15 @@ polls. Visible probes record each attempt. Only raise this while retrying is
 safe, never to hide an uncertain mutation or provider failure. Inputs are read
 again on each probe, so isolate changing correlation fields. The optional
 in-memory `run` API does not support this facility.
-CPL guards in spawn workflows are rejected for now. Bound intake in experiments
-because spawn does not yet impose a limit on active sessions.
+CPL guards in spawn workflows refer only to the current session's roles.
+`At[Reviewer]` never searches parent or sibling histories, even on a shared
+endpoint. Children begin empty histories; copied/shared cells are data, not
+imported approval evidence. Ordinary messages carry session-local evidence.
+Unknown roles fail validation. Pool causal handoffs with spawn-aware CPL remain
+unsupported. Low-level atoms need a semantic `version=` and should declare
+remote context reads with `roles=("Reviewer",)`; field comparisons declare both
+automatically. SQLite restores each session's monitor with its control state.
+Bound intake because spawn does not yet impose a limit on active sessions.
 
 Test overlapping requests, both decision outcomes and fresh-process resume.
 Verify that parent intake can finish with children still pending. The checkout
@@ -825,8 +832,9 @@ spawn(Onboarding, at=HR, retain=(HR,),
 
 `Onboarding` is a static `@fragment`. The runtime creates a fresh session,
 keeps HR's endpoint, and allocates a new endpoint for every other child role.
-The initiator named by `at` belongs to the parent session; it need not occur in
-the child. Omitted `retain` means every child role gets a fresh endpoint.
+The initiator named by `at` must occur in the child and be explicitly listed
+in `retain`. To model a dispatcher with no child work, include `skip(Dispatcher)`
+in the body and retain Dispatcher. Omitting `retain` is an error with `at`.
 Without `at`, spawn inherits every child endpoint as before, with no initiator.
 Do not supply `bindings=` or an endpoint registry; arbitrary recruitment of
 existing services is outside this version.
@@ -844,7 +852,9 @@ Retained roles derive the child identity and binding locally; they do not wait
 for the initiator. Their child can send before a fresh recipient is allocated.
 Only an initialization send allocates that recipient, and its receive activates
 role code. Queuing a message at a future address does neither. The initiator
-sends initialization only to fresh roles.
+sends initialization only to fresh roles, then forks its own child role.
+When every role is retained, no initialization is needed; execution is the
+same as inherited spawn. There are no initiated empty children or visit markers.
 
 The runtime records allocation and initialization progress so durable retries
 reuse session/endpoint identities and do not activate the same role twice.
@@ -852,11 +862,14 @@ New endpoints do not receive parent branch decisions. There is no global start
 barrier or implicit child result. The current backend creates local workers;
 it does not provision remote machines, accounts or credentials. External
 arrival and human-service actions retain their ordinary replay guarantees.
-CPL guards, arbitrary endpoint recruitment, rebinding and migration remain
-unsupported. See `examples/dynamic_spawn/workflow.py` for Alice/Bob onboarding.
-Use finite workloads for this experimental backend: allocated workers remain
-hosted until the run completes; automatic endpoint retirement is not yet
-implemented.
+CPL uses the current-session scope described above. Arbitrary endpoint
+recruitment, rebinding and migration remain unsupported. See `examples/dynamic_spawn/workflow.py` for Alice/Bob onboarding.
+Completed endpoint workers release their threads and database connections once
+all local sessions, including retained descendants, finish. Fresh workers wait
+for initialization before they can retire. Restart retains activation evidence;
+a late duplicate initialization cannot rerun a completed role. Durable records
+and in-memory completion records still accumulate, and active sessions have no
+admission limit. Use bounded workloads until those policies are in place.
 
 ## Human actions
 

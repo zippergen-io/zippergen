@@ -137,6 +137,12 @@ class InProcessChannel:
                       if channel.startswith("init:")]
             return self._init_inflight > 0 or any(not q._q.empty() for q in queues)
 
+    def pending_initialization_endpoints(self) -> set[str]:
+        """Endpoints needing an init consumer, including retired endpoints."""
+        with self._lock:
+            return {receiver for (_, receiver, channel), q in self._qs.items()
+                    if channel.startswith("init:invite:") and not q._q.empty()}
+
     def has_pending_messages(self) -> bool:
         with self._lock:
             return self._init_inflight > 0 or any(

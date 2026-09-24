@@ -83,6 +83,8 @@ class LocalSupervisor:
         timeout: float = 60.0,
     ) -> None:
         require_workflow_availability(wf, initial_envs)
+        from zippergen.session_cpl import compile_session_cpl
+        self.cpl_plans = compile_session_cpl(wf)
         self.wf = wf
         self.lifelines = tuple(lifelines) if lifelines is not None else _ordered_workflow_lifelines(wf)
         self.initial_envs = initial_envs or {}
@@ -137,7 +139,8 @@ class LocalSupervisor:
             claim_workflow_identity(
                 conn,
                 self.wf.name,
-                program_fingerprint(local_programs, templates=templates),
+                program_fingerprint(local_programs, templates=templates,
+                                    session_cpl=self.cpl_plans),
             )
         finally:
             conn.close()
@@ -165,7 +168,8 @@ class LocalSupervisor:
             return existing
 
         starting_envs = self._starting_envs()
-        monitors, formula_conditions = _build_formula_monitors(self.wf, self.lifelines)
+        monitors, formula_conditions = (({}, {}) if self.cpl_plans else
+                                        _build_formula_monitors(self.wf, self.lifelines))
         result_boxes: dict[str, object] = {}
         threads: list[threading.Thread] = []
         human_backend = self.human_backend
@@ -194,7 +198,7 @@ class LocalSupervisor:
                         assistant_backend=self.assistant_backend,
                         trace=self.trace,
                         monitor=monitors.get(lifeline.name),
-                        formula_conditions=formula_conditions,
+                        formula_conditions=formula_conditions, cpl_plans=self.cpl_plans,
                         stop=self.stop,
                     )
                     result_boxes[lifeline.name] = runner.run()
@@ -314,13 +318,14 @@ class LocalSupervisor:
         return result
 
     def _run_fresh(self, templates) -> object:
-        from zippergen.sessions import validate_root_endpoint
+        from zippergen.control import decode_control
+        from zippergen.sessions import SessionState, validate_root_endpoint
         from zippergen.syntax import EmptyStmt
 
         roots = {role.name: project(self.wf, role) for role in self.lifelines}
         root_bindings = {role.name: validate_root_endpoint(role.name)
                          for role in self.lifelines}
-        configured = set(root_bindings)
+        configured = {endpoint: role for role, endpoint in root_bindings.items()}
         local_programs = dict(roots)
         self._claim_identity(local_programs, templates)
         existing = self._load_existing_result()
@@ -337,7 +342,7 @@ class LocalSupervisor:
 
         starting = self._starting_envs()
         results: dict[str, object] = {}
-        threads: list[threading.Thread] = []
+        threads: dict[str, threading.Thread] = {}
         completion = threading.Event()
         backend = self.human_backend
         dispatcher = None
@@ -359,7 +364,7 @@ class LocalSupervisor:
                     trace=self.trace, stop=self.stop,
                     root_role=endpoint if endpoint in roots else None,
                     root_bindings=root_bindings,
-                    templates=templates, completion=completion,
+                    templates=templates, completion=completion, cpl_plans=self.cpl_plans,
                 )
                 results[endpoint] = runner.run()
             except BaseException as exc:
@@ -372,7 +377,7 @@ class LocalSupervisor:
         def start_worker(endpoint, static_role):
             thread = threading.Thread(target=worker, args=(endpoint, static_role),
                                       name=static_role, daemon=True)
-            threads.append(thread)
+            threads[endpoint] = thread
             thread.start()
 
         for endpoint in sorted(configured):
@@ -384,7 +389,11 @@ class LocalSupervisor:
             while not completion.is_set():
                 if self.stop.is_set():
                     break
-                # These two facts must come from one SQLite snapshot. If an
+                for endpoint, thread in list(threads.items()):
+                    if not thread.is_alive():
+                        thread.join()
+                        del threads[endpoint]
+                # These facts must come from one SQLite snapshot. If an
                 # invitation is accepted between separate reads, old "done"
                 # role rows plus the new empty queue falsely look quiescent.
                 observer.execute("BEGIN")
@@ -393,15 +402,35 @@ class LocalSupervisor:
                     pending_messages = observer.execute(
                         "SELECT 1 FROM outstanding_messages LIMIT 1"
                     ).fetchone()
+                    pending_init = {row[0] for row in observer.execute(
+                        "SELECT DISTINCT receiver FROM outstanding_messages "
+                        "WHERE channel LIKE 'init:invite:%'"
+                    ).fetchall()}
                     allocations = list_spawn_allocations(observer)
                     observer.execute("COMMIT")
                 except BaseException:
                     observer.execute("ROLLBACK")
                     raise
+                state_by_endpoint = {row["role"]: row for row in states}
                 for _child, role, endpoint in allocations:
                     if endpoint not in configured:
-                        configured.add(endpoint)
+                        configured[endpoint] = role
+                        saved = state_by_endpoint.get(endpoint)
+                        if saved is not None and saved["status"] == "done" and endpoint not in pending_init:
+                            control = decode_control(
+                                EmptyStmt(), saved["control"], templates=templates,
+                                endpoint=endpoint, root_bindings=root_bindings,
+                                keep_alive=True,
+                            )
+                            if isinstance(control, SessionState) and control.can_retire:
+                                # Resume only live endpoints; retain their durable
+                                # completion/activation evidence without a thread.
+                                results[endpoint] = {}
+                                continue
                         start_worker(endpoint, role)
+                for endpoint in pending_init:
+                    if endpoint in configured and endpoint not in threads:
+                        start_worker(endpoint, configured[endpoint])
                 if (len(states) == len(configured)
                         and all(row["status"] == "done" for row in states)
                         and pending_messages is None):
@@ -420,7 +449,7 @@ class LocalSupervisor:
                 completion.set()
                 if dispatcher is not None:
                     dispatcher.cancel_pending()
-            for thread in threads:
+            for thread in threads.values():
                 thread.join(timeout=1)
 
         for endpoint, value in results.items():
