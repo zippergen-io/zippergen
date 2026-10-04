@@ -18,6 +18,7 @@ def _successful_cli_stdout(command: list[str]) -> str:
     if command[1:2] == ["exec"]:
         return "\n".join(
             [
+                json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
                 json.dumps(
                     {
                         "type": "item.completed",
@@ -33,6 +34,7 @@ def _successful_cli_stdout(command: list[str]) -> str:
             "subtype": "success",
             "is_error": False,
             "result": "done",
+            "session_id": "session-1",
         }
     )
 

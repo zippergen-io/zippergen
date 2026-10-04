@@ -31,6 +31,7 @@ from typing import TypeAlias, cast
 from zippergen.locator import _children, resolve_path, statement_node_paths
 from zippergen.sessions import SessionState
 from zippergen.syntax import (
+    AssistantAction,
     AnyStmt,
     EmptyStmt,
     LitExpr,
@@ -253,6 +254,10 @@ def _shape(node) -> list:
         fields.append(
             ["signature", _action_signature(action)]
         )
+        # Conversation retention governs persisted adapter state. Resuming
+        # under a different policy must not silently reinterpret that state.
+        if isinstance(action, AssistantAction):
+            fields.append(["assistant_session", action.session])
         # A pool declaration governs persisted claims, including their lease
         # policy. Its identity must survive resume just like the action site.
         from zippergen.pools import PoolOperation

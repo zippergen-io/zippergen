@@ -30,6 +30,11 @@ Actual enforcement depends on the selected CLI and host. `zg assistant check`
 checks for the required options. It does not prove sandbox enforcement or
 inspect the CLI's login. Review any deliberately enabled external tools.
 
+Assistant conversations persist in the CLI's own session files by default,
+while durable execution stores retain their IDs. Actions on the same
+participant, backend, and workspace share this history. Use `session="fresh"`
+for an action that needs independent context and no retained CLI session.
+
 ## Stored data and deployment files
 
 Private files use owner-only filesystem permissions. They are not encrypted

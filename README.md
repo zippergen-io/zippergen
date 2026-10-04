@@ -337,6 +337,15 @@ zg assistant check
 Assign `Maintainer.action_name` when only one action needs a different
 backend. The `@assistant` declaration still controls filesystem access,
 external tools, and shell access. Codex and Claude use their own login.
+By default, assistant actions on the same participant retain their CLI
+conversation throughout one workflow execution. Different participants,
+backends, and workspaces have separate conversations, and a new execution
+starts fresh. Durable resume retains the conversation IDs; the CLI's own
+session files must remain available. Set `session="fresh"` on an `@assistant`
+action to run it independently without changing the participant's retained
+conversation. Each action still starts a CLI process and applies its declared
+permissions.
+
 ZipperGen removes workflow model keys and connector credentials from their
 environment. This does not prevent access to files readable by the same
 operating-system account. A read-only setting limits changes, not which

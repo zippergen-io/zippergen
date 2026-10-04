@@ -9,6 +9,7 @@ import subprocess
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from zippergen.syntax import AssistantAction, Json, validate_zvalue
@@ -89,12 +90,12 @@ _ASSISTANT_BASE_ENVIRONMENT = {
 # assistant that genuinely needs its own automated credential should be given
 # one explicitly, never one inferred from a workflow's model routing.
 def _codex_command(
-    executable: str, workspace: Path, action: "AssistantAction"
+    executable: str, workspace: Path, action: "AssistantAction",
+    session_id: str | None = None,
 ) -> list[str]:
     command = [
         executable,
         "exec",
-        "--ephemeral",
         "--strict-config",
         "--skip-git-repo-check",
         "--cd",
@@ -117,12 +118,17 @@ def _codex_command(
             ]
         )
     command.append("--json")
+    if action.session == "fresh":
+        command.append("--ephemeral")
+    elif session_id is not None:
+        command.extend(["resume", session_id])
     command.append("-")
     return command
 
 
 def _claude_command(
-    executable: str, workspace: Path, action: "AssistantAction"
+    executable: str, workspace: Path, action: "AssistantAction",
+    session_id: str | None = None,
 ) -> list[str]:
     tools = ["Read", "Glob", "Grep"]
     if action.access == "write":
@@ -132,7 +138,6 @@ def _claude_command(
     command = [
         executable,
         "--print",
-        "--no-session-persistence",
         "--input-format",
         "text",
         "--output-format",
@@ -151,7 +156,24 @@ def _claude_command(
                 "--strict-mcp-config",
             ]
         )
+    if action.session == "fresh":
+        command.append("--no-session-persistence")
+    elif session_id is not None:
+        command.extend(["--resume", session_id])
     return command
+
+
+def _codex_session_id(stdout: str) -> str | None:
+    for raw in stdout.splitlines():
+        if raw.strip():
+            event = json.loads(raw)
+            if event.get("type") == "thread.started":
+                return event.get("thread_id")
+    return None
+
+
+def _claude_session_id(stdout: str) -> str | None:
+    return json.loads(stdout).get("session_id")
 
 
 def _decode_codex_output(stdout: str) -> str:
@@ -260,9 +282,11 @@ class AssistantBackendSpec:
     #: How to ask the CLI for its options, given its executable path.
     help_command: Callable[[str], list[str]]
     #: How to build the run command for one action.
-    command: Callable[[str, Path, "AssistantAction"], list[str]]
+    command: Callable[..., list[str]]
     #: How to distinguish a completed result from a CLI-level failure.
     decode_output: Callable[[str], str]
+    #: Native conversation ID to retain after a successful turn.
+    session_id: Callable[[str], str | None]
 
 
 ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
@@ -271,6 +295,7 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         label="Codex CLI",
         login_environment=frozenset({"CODEX_HOME"}),
         required_options=(
+            "resume",
             "--ephemeral",
             "--strict-config",
             "--skip-git-repo-check",
@@ -283,6 +308,7 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         help_command=lambda executable: [executable, "exec", "--help"],
         command=_codex_command,
         decode_output=_decode_codex_output,
+        session_id=_codex_session_id,
     ),
     AssistantBackendSpec(
         name="claude",
@@ -290,6 +316,7 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         login_environment=frozenset({"CLAUDE_CONFIG_DIR"}),
         required_options=(
             "--no-session-persistence",
+            "--resume",
             "--input-format",
             "--output-format",
             "--print",
@@ -303,6 +330,7 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         help_command=lambda executable: [executable, "--help"],
         command=_claude_command,
         decode_output=_decode_claude_output,
+        session_id=_claude_session_id,
     ),
 )
 
@@ -494,6 +522,37 @@ def _coerce_result(action: AssistantAction, stdout: str) -> object:
     return value
 
 
+class _CliAssistantBackend:
+    """Callable adapter with explicit execution and participant binding.
+
+    Custom backends retain the ordinary two-argument callable interface.
+    Native CLI adapters additionally receive the physical endpoint and durable
+    connection, so they never infer spawned participant identity from a thread.
+    """
+
+    def __init__(self, invoke: Callable, new_execution: Callable):
+        self.invoke = invoke
+        self.new_execution = new_execution
+
+    def __call__(self, action, inputs):
+        return self.invoke(action, inputs)
+
+
+def _new_assistant_execution(backend):
+    if isinstance(backend, _CliAssistantBackend):
+        return backend.new_execution()
+    return backend
+
+
+def _bind_assistant_backend(backend, participant, *, endpoint=None, conn=None):
+    if isinstance(backend, _CliAssistantBackend):
+        return partial(
+            backend.invoke, participant=participant,
+            endpoint=endpoint or participant, conn=conn,
+        )
+    return backend
+
+
 def make_cli_assistant_backend(
     default: str | None = None,
     *,
@@ -504,7 +563,10 @@ def make_cli_assistant_backend(
 
     Selection order is an exact action route, a participant route, then this
     backend's ``default``. The backend never uses a shell. Arguments are
-    passed directly to the selected executable.
+    passed directly to the selected executable. Conversations are retained per
+    participant, backend, and workspace within an execution. ``session="fresh"``
+    actions run independently. Runtimes bind participant identity explicitly
+    and durable runners save conversation IDs in their execution store.
     """
 
     if default is not None and default not in set(ASSISTANT_BACKENDS):
@@ -528,12 +590,19 @@ def make_cli_assistant_backend(
             + ", ".join(invalid)
         )
     root = Path(project_root or Path.cwd()).expanduser().resolve()
+    sessions: dict[str, str] = {}
+    session_locks: dict[str, threading.Lock] = {}
+    registry_lock = threading.Lock()
 
     def run_assistant(
         action: AssistantAction,
         inputs: dict[str, object],
+        *,
+        participant: str | None = None,
+        endpoint: str | None = None,
+        conn=None,
     ) -> dict[str, object]:
-        participant = threading.current_thread().name
+        participant = participant or threading.current_thread().name
         target = f"{participant}.{action.name}"
         selected = (
             selected_routes.get(target)
@@ -567,42 +636,95 @@ def make_cli_assistant_backend(
                 f"or is not a directory: {workspace}"
             )
 
-        prompt = _assistant_prompt(action, inputs)
-        command = spec.command(executable, workspace, action)
-        stdin = prompt
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=workspace,
-                env=_assistant_environment(spec.name),
-                input=stdin,
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=action.timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            timeout_label = (
-                f"{action.timeout:g}s"
-                if action.timeout is not None
-                else "configured"
-            )
-            raise AssistantExecutionError(
-                f"Assistant action '{action.name}' exceeded its "
-                f"{timeout_label} timeout."
-            ) from exc
-        except OSError as exc:
-            raise AssistantExecutionError(
-                f"Could not start assistant action '{action.name}': {exc}"
-            ) from exc
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout).strip()
-            raise AssistantExecutionError(
-                f"Assistant action '{action.name}' failed with exit code "
-                f"{completed.returncode}: {detail[:500]}"
-            )
-        output_name, _output_type = action.outputs[0]
-        output = spec.decode_output(completed.stdout)
-        return {output_name: _coerce_result(action, output)}
+        # IDs belong to this execution store and physical participant. Backend
+        # switches and workspace changes get their own conversations. CLI login
+        # locations also distinguish identities if the embedding changes them.
+        environment = _assistant_environment(spec.name)
+        key = "assistant-session:" + json.dumps([
+            endpoint or participant, spec.name, str(workspace),
+            [(name, environment.get(name)) for name in sorted(
+                spec.login_environment | {"HOME"}
+            )],
+        ], separators=(",", ":"))
+        with registry_lock:
+            lock = session_locks.setdefault(key, threading.Lock())
+        # Serialize turns only for the same conversation; other participants
+        # can continue independently.
+        with lock:
+            session_id = None
+            if action.session == "participant":
+                if conn is not None:
+                    from zippergen.store import load_adapter_state
+                    if conn.in_transaction:
+                        raise AssistantExecutionError(
+                            "Assistant CLI work must run outside a store transaction."
+                        )
+                    session_id = load_adapter_state(conn, key)
+                else:
+                    session_id = sessions.get(key)
+                if session_id is not None and (
+                    not isinstance(session_id, str) or not session_id.strip()
+                ):
+                    raise AssistantExecutionError(
+                        "Stored assistant conversation ID is invalid."
+                    )
+            prompt = _assistant_prompt(action, inputs)
+            command = spec.command(executable, workspace, action, session_id)
+            stdin = prompt
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=workspace,
+                    env=environment,
+                    input=stdin,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=action.timeout,
+                )
+            except subprocess.TimeoutExpired as exc:
+                timeout_label = (
+                    f"{action.timeout:g}s"
+                    if action.timeout is not None
+                    else "configured"
+                )
+                raise AssistantExecutionError(
+                    f"Assistant action '{action.name}' exceeded its "
+                    f"{timeout_label} timeout."
+                ) from exc
+            except OSError as exc:
+                raise AssistantExecutionError(
+                    f"Could not start assistant action '{action.name}': {exc}"
+                ) from exc
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout).strip()
+                raise AssistantExecutionError(
+                    f"Assistant action '{action.name}' failed with exit code "
+                    f"{completed.returncode}: {detail[:500]}"
+                )
+            output_name, _output_type = action.outputs[0]
+            output = spec.decode_output(completed.stdout)
+            if action.session == "participant":
+                returned_id = spec.session_id(completed.stdout)
+                if not isinstance(returned_id, str) or not returned_id.strip():
+                    raise AssistantExecutionError(
+                        f"{spec.label} completed without a conversation ID; "
+                        "cannot retain the participant session."
+                    )
+                if session_id is not None and returned_id != session_id:
+                    raise AssistantExecutionError(
+                        f"{spec.label} resumed a different conversation than requested."
+                    )
+                if conn is not None:
+                    from zippergen.store import write_adapter_state
+                    write_adapter_state(conn, key, returned_id)
+                else:
+                    sessions[key] = returned_id
+            return {output_name: _coerce_result(action, output)}
 
-    return run_assistant
+    return _CliAssistantBackend(
+        run_assistant,
+        lambda: make_cli_assistant_backend(
+            default, project_root=root, routes=selected_routes,
+        ),
+    )

@@ -150,6 +150,7 @@ def _action_definition(action: object) -> dict[str, object]:
             "access": action.access,
             "external_tools": action.external_tools,
             "shell": action.shell,
+            "session": action.session,
             "workspace": action.workspace,
             "timeout": action.timeout,
             "visible": action.visible,

@@ -6,9 +6,9 @@ round the human sees one line from each and answers: ship it, another round, or
 abandon. Both assistants wait on that answer -- they never evaluate the loop
 themselves, which is what ``zg show --agent Reviewer`` makes visible.
 
-Both assistants may be the same CLI. Every ``@assistant`` call is a fresh
-non-persistent session, so an Implementer and a Reviewer routed to the same
-executable share no context and the review stays independent. Their
+Both assistants may be the same CLI. Each participant retains its own CLI
+conversation across rounds; an Implementer and a Reviewer routed to the same
+executable have separate conversations and the review stays independent. Their
 capabilities differ where it matters: the implementer may write, the reviewer
 may only read.
 

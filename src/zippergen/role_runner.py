@@ -122,6 +122,7 @@ class RoleRunner:
         llm_backend=None,
         human_backend=None,
         assistant_backend=None,
+        assistant_participant: str | None = None,
         trace=None,
         monitor=None,
         formula_conditions: dict | None = None,
@@ -147,7 +148,11 @@ class RoleRunner:
         self.ns = ns
         self.llm_backend = llm_backend
         self.human_backend = human_backend
-        self.assistant_backend = assistant_backend
+        from zippergen.assistant_backends import _bind_assistant_backend
+        self.assistant_backend = _bind_assistant_backend(
+            assistant_backend, assistant_participant or root_role or role,
+            endpoint=role, conn=conn,
+        )
         self.cpl_plans = cpl_plans
         self.monitor = monitor
         self.formula_conditions = formula_conditions or {}

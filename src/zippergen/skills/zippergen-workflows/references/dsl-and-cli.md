@@ -437,6 +437,22 @@ The same routing applies to plain runs, durable runs, and deployments. The
 low-level Python API may still pass `assistant_backend=` directly. Project
 routing is the only static way to select a backend for an `@assistant` action.
 
+The default `session="participant"` resumes the participant's CLI conversation
+across actions and loop iterations in one workflow execution. Conversations
+are separate per physical participant, backend, workspace, and CLI login
+location. Fresh spawned participants receive separate conversations; inherited
+participants retain theirs. A new workflow execution starts fresh. Declare
+`session="fresh"` for an independent action; it neither reads nor replaces the
+retained conversation. This policy is visible in code views and semantic
+snapshots. Every invocation starts a CLI process with the current action's
+permissions and inputs, then resumes the exact saved conversation ID.
+
+Durable runners persist IDs in the execution store so stop/restart can resume
+the same conversations. The native CLI session files must also remain available
+under its login/configuration directory. A resume failure is reported rather
+than silently starting over. CLI conversation persistence does not make an
+action exactly-once: the existing retry and crash behavior below still applies.
+
 `zg assistant check` verifies that the selected executable exists and supports
 the required safety options. It does not inspect or manage authentication.
 Codex and Claude keep their own login systems.

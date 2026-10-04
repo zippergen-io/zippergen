@@ -110,13 +110,16 @@ def test_each_backend_builds_a_command_only_it_would_build(spec, tmp_path) -> No
     from types import SimpleNamespace
 
     action = SimpleNamespace(
-        access="read-only", shell="disabled", external_tools="none", name="a"
+        access="read-only", shell="disabled", external_tools="none", name="a",
+        session="fresh",
     )
     built = spec.command(f"/usr/bin/{spec.name}", tmp_path, action)
 
     assert built[0] == f"/usr/bin/{spec.name}"
     # Every option this backend is checked for must be one it actually uses.
     used = set(built)
+    action.session = "participant"
+    used.update(spec.command(f"/usr/bin/{spec.name}", tmp_path, action, "session-1"))
     declared = set(spec.required_options)
     assert declared <= used | {opt for opt in declared if opt.startswith("--config")}
 

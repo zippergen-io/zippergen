@@ -1321,6 +1321,10 @@ def _exec(
 def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, human_backend, assistant_backend,
                  monitor, trace, formula_conditions, stop, cpl_plans=None):
     try:
+        from zippergen.assistant_backends import _bind_assistant_backend
+        assistant_backend = _bind_assistant_backend(
+            assistant_backend, threading.current_thread().name,
+        )
         from zippergen.sessions import SessionState, has_forks
         if has_forks(local_stmt) or cpl_plans:
             state = SessionState.start(local_stmt)
@@ -1451,6 +1455,10 @@ def _run_fresh(wf, lifelines, initial_envs, templates,
 
     def worker(endpoint, static_role):
         try:
+            from zippergen.assistant_backends import _bind_assistant_backend
+            worker_assistant = _bind_assistant_backend(
+                assistant_backend, static_role, endpoint=endpoint,
+            )
             role = endpoint if endpoint in roots else None
             env = _default_env(wf) if role is not None else {}
             if role is not None:
@@ -1475,7 +1483,7 @@ def _run_fresh(wf, lifelines, initial_envs, templates,
                     raise WorkflowCancelled("Workflow cancelled")
                 _next, progressed = state.step(
                     env, channels, wf.ns, llm_backend, human_backend, trace, stop,
-                    assistant_backend=assistant_backend, cpl_plans=cpl_plans,
+                    assistant_backend=worker_assistant, cpl_plans=cpl_plans,
                 )
                 if state.can_retire and endpoint not in channels.pending_initialization_endpoints():
                     break
@@ -1586,6 +1594,9 @@ def run(
 
     if trace is None and verbose:
         trace = console_trace
+
+    from zippergen.assistant_backends import _new_assistant_execution
+    assistant_backend = _new_assistant_execution(assistant_backend)
 
     templates = project_templates(wf)
     if contains_initiated_spawn(wf.body):

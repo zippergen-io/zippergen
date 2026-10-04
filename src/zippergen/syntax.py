@@ -457,6 +457,7 @@ class AssistantAction:
     workspace: str | None = None
     timeout: float | None = None
     visible: bool = True
+    session: str = "participant"
 
     def __repr__(self) -> str:
         ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)

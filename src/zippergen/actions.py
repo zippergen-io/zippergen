@@ -472,6 +472,7 @@ def assistant(
     access: str = "read-only",
     external_tools: str = "none",
     shell: str = "restricted",
+    session: str = "participant",
     workspace: str | None = None,
     timeout: float | None = None,
     visible: bool = True,
@@ -494,6 +495,9 @@ def assistant(
     no Bash tool, while Codex retains command execution inside its structural
     read-only or network-disabled workspace sandbox.  Enabling the shell is an
     explicit, semantically visible choice for backends such as Claude.
+    ``session`` is ``"participant"`` (the default), retaining the participant's
+    CLI conversation within this workflow execution, or ``"fresh"``, running
+    this action independently without changing the retained conversation.
     ``workspace`` is a static path, relative to the configured project root.
     The decorated function's typed parameters become explicit dynamic inputs;
     its return annotation declares the single typed result.
@@ -520,6 +524,11 @@ def assistant(
         )
     if timeout is not None and timeout <= 0:
         raise ValueError("@assistant timeout must be greater than zero.")
+    if session not in {"participant", "fresh"}:
+        raise ValueError(
+            "@assistant session must be 'participant' or 'fresh', "
+            f"got {session!r}."
+        )
 
     def decorator(fn: Callable) -> AssistantAction:
         inputs = _extract_inputs(fn)
@@ -551,6 +560,7 @@ def assistant(
             access=access,
             external_tools=external_tools,
             shell=shell,
+            session=session,
             workspace=workspace,
             timeout=timeout,
             visible=visible,

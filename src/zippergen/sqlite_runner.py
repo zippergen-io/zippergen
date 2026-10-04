@@ -97,7 +97,8 @@ class LocalSupervisor:
         if assistant_backend is None:
             from zippergen.assistant_backends import make_cli_assistant_backend
             assistant_backend = make_cli_assistant_backend()
-        self.assistant_backend = assistant_backend
+        from zippergen.assistant_backends import _new_assistant_execution
+        self.assistant_backend = _new_assistant_execution(assistant_backend)
         self.trace = trace if trace is not None else (console_trace if verbose else None)
         self.timeout = timeout
         self.stop = threading.Event()
@@ -363,6 +364,7 @@ class LocalSupervisor:
                     assistant_backend=self.assistant_backend,
                     trace=self.trace, stop=self.stop,
                     root_role=endpoint if endpoint in roots else None,
+                    assistant_participant=static_role,
                     root_bindings=root_bindings,
                     templates=templates, completion=completion, cpl_plans=self.cpl_plans,
                 )

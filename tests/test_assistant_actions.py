@@ -56,6 +56,7 @@ def _successful_cli_stdout(command: list[str], result: str = "done") -> str:
             "subtype": "success",
             "is_error": False,
             "result": result,
+            "session_id": "session-1",
         }
     )
 
@@ -103,6 +104,7 @@ def test_assistant_decorator_defaults_to_least_privilege():
     assert review_repository.access == "read-only"
     assert review_repository.external_tools == "none"
     assert review_repository.shell == "restricted"
+    assert review_repository.session == "participant"
 
 
 def test_assistant_decorator_requires_one_instruction_source(tmp_path, monkeypatch):
@@ -229,7 +231,7 @@ def test_assistant_action_has_distinct_views_and_semantics():
     assert (
         "@assistant(instructions='Update the repository according to the "
         "request.', access='write', external_tools='none', "
-        "shell='restricted')" in code
+        "shell='restricted', session='participant')" in code
     )
     definition = model["action_definitions"]["update_repository"]
     assert definition["kind"] == "assistant"
@@ -238,6 +240,7 @@ def test_assistant_action_has_distinct_views_and_semantics():
     assert definition["access"] == "write"
     assert definition["external_tools"] == "none"
     assert definition["shell"] == "restricted"
+    assert definition["session"] == "participant"
 
 
 def test_validation_warns_when_write_workspace_contains_workflow_source():
@@ -294,7 +297,6 @@ def test_cli_backend_invokes_codex_without_a_shell(tmp_path, monkeypatch):
     assert captured["command"] == [
         "/tools/codex",
         "exec",
-        "--ephemeral",
         "--strict-config",
         "--skip-git-repo-check",
         "--cd",
@@ -472,18 +474,17 @@ def test_cli_backend_enforces_read_only_codex_and_claude_modes(
         claude_review, {"request": "review"}
     )
 
-    assert commands[0][7:9] == ["--sandbox", "read-only"]
+    assert commands[0][6:8] == ["--sandbox", "read-only"]
     assert "--strict-config" in commands[0]
     assert "--ignore-user-config" in commands[0]
     assert "mcp_servers={}" in commands[0]
-    assert commands[1][1:4] == [
+    assert commands[1][1:3] == [
         "--print",
-        "--no-session-persistence",
         "--input-format",
     ]
-    assert commands[1][4] == "text"
-    assert commands[1][5:7] == ["--output-format", "json"]
-    assert commands[1][7:9] == ["--permission-mode", "plan"]
+    assert commands[1][3] == "text"
+    assert commands[1][4:6] == ["--output-format", "json"]
+    assert commands[1][6:8] == ["--permission-mode", "plan"]
     assert "--safe-mode" in commands[1]
     assert "--strict-mcp-config" in commands[1]
     assert "Read,Glob,Grep" in commands[1]
@@ -542,8 +543,8 @@ def test_cli_backends_keep_prompts_out_of_argv_and_isolate_secrets(
     assert "CLAUDE_CONFIG_DIR" not in calls[0][1]["env"]
     assert calls[1][1]["env"]["CLAUDE_CONFIG_DIR"] == "/home/operator/.claude"
     assert "CODEX_HOME" not in calls[1][1]["env"]
-    assert "--ephemeral" in calls[0][0]
-    assert "--no-session-persistence" in calls[1][0]
+    assert "--ephemeral" not in calls[0][0]
+    assert "--no-session-persistence" not in calls[1][0]
 
 
 def test_claude_shell_requires_explicit_opt_in(tmp_path, monkeypatch):

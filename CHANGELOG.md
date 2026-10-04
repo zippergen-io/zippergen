@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Assistant actions now retain one CLI conversation per participant, backend,
+  workspace, and login location within a workflow execution. Durable resume
+  restores conversation IDs from the store; native CLI session files must
+  remain available. Use `session="fresh"` for an independent action. This
+  policy is part of workflow semantics, so existing durable assistant workflows
+  must finish with their original runtime or start a new execution.
+
 - Initiated spawn now requires `at` to be a retained child role. The initiator
   initializes fresh roles, then always forks; the separate visit marker is
   removed. Use a retained `skip(Dispatcher)` role for fire-and-forget dispatch.
