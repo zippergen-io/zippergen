@@ -1841,7 +1841,7 @@ def _workflow_configure(
     if assistant is not None:
         from zippergen.assistant_backends import make_cli_assistant_backend
         assistant_backend = make_cli_assistant_backend(
-            str(assistant),
+            assistant,
             project_root=assistant_root,
         )
     elif assistant_backend is None and assistant_root is not None:

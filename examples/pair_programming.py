@@ -22,6 +22,16 @@ Setup, once per project
     zg assistant assign Reviewer     rev
     zg validate
 
+To pin each role's model and reasoning effort, replace its named configuration:
+
+    zg assistant configure impl codex --model gpt-6.1-sol --reasoning-effort high
+    zg assistant configure rev claude --model opus --reasoning-effort high
+
+The assignments above still apply. These are example selections: choose model
+IDs available to your CLI login. Full IDs are more stable than aliases. Pinned
+settings are passed on every turn, including resumes, and durable runs and
+deployments preserve their original choices across restart.
+
 Running it
 ----------
 

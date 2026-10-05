@@ -8,7 +8,10 @@ from types import ModuleType
 from typing import Protocol
 
 from zippergen.syntax import AssistantAction, Workflow
-from zippergen.assistant_backends import ASSISTANT_BACKENDS
+from zippergen.assistant_backends import (
+    ASSISTANT_BACKENDS, AssistantSelection, assistant_settings,
+    normalize_assistant_selection,
+)
 
 
 class _AssistantWorkspace(Protocol):
@@ -24,10 +27,10 @@ class _AssistantWorkspace(Protocol):
 
 @dataclass(frozen=True)
 class AssistantRouting:
-    """Concrete assistant backends resolved from named project settings."""
+    """Concrete CLI selections, including model and effort pins."""
 
-    default_backend: str | None
-    overrides: dict[str, str]
+    default_backend: AssistantSelection | None
+    overrides: dict[str, AssistantSelection]
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,8 @@ class ResolvedAssistantAction:
     access: str
     external_tools: str
     shell: str
+    model: str | None = None
+    reasoning_effort: str | None = None
 
 
 def _assistant_sites(
@@ -83,18 +88,21 @@ def assistant_targets(
     return targets
 
 
-def normalize_assistant_overrides(values: object) -> dict[str, str]:
-    """Return a validated participant/action to backend mapping."""
+def normalize_assistant_overrides(values: object) -> dict[str, AssistantSelection]:
+    """Return validated participant/action CLI selections."""
 
     if values is None:
         return {}
     if not isinstance(values, Mapping):
         raise SystemExit("Assistant routing must be an object.")
-    normalized: dict[str, str] = {}
+    normalized: dict[str, AssistantSelection] = {}
     for target, backend in values.items():
         name = str(target).strip()
-        selected = str(backend).strip().casefold()
-        if not name or selected not in set(ASSISTANT_BACKENDS):
+        try:
+            selected = normalize_assistant_selection(backend)
+        except ValueError as exc:
+            raise SystemExit(f"Assistant route {name!r}: {exc}") from exc
+        if not name or selected is None:
             raise SystemExit(
                 "Assistant routes require TARGET to select one of: "
                 + ", ".join(ASSISTANT_BACKENDS)
@@ -106,21 +114,18 @@ def normalize_assistant_overrides(values: object) -> dict[str, str]:
 
 def effective_assistant_routes(
     workflow: Workflow,
-    default_backend: str | None,
-    overrides: Mapping[str, str] | None = None,
+    default_backend: AssistantSelection | None,
+    overrides: Mapping[str, AssistantSelection] | None = None,
     *,
     module: ModuleType | None = None,
     semantics: Mapping[str, object] | None = None,
 ) -> AssistantRouting:
     """Validate concrete assistant routes against the workflow."""
 
-    default = str(default_backend or "").strip().casefold() or None
-    if default not in {None, *ASSISTANT_BACKENDS}:
-        raise SystemExit(
-            "The default assistant backend must be one of: "
-            + ", ".join(ASSISTANT_BACKENDS)
-            + "."
-        )
+    try:
+        default = normalize_assistant_selection(default_backend)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     selected = normalize_assistant_overrides(overrides)
     known = set(assistant_targets(workflow, module, semantics)) - {"default"}
     unknown = sorted(set(selected) - known)
@@ -141,7 +146,7 @@ def project_assistant_routing(
     workflow: Workflow,
     *,
     module: ModuleType | None = None,
-    fallback_default: str | None = None,
+    fallback_default: AssistantSelection | None = None,
     semantics: Mapping[str, object] | None = None,
 ) -> AssistantRouting:
     """Resolve named project assignments to concrete CLI backends."""
@@ -156,7 +161,7 @@ def project_assistant_routing(
     profile = workspace.assistant_assignment_profile(workflow_spec)
     configurations = workspace.assistant_configurations()
 
-    def configuration(name: object, *, target: str) -> tuple[str, str]:
+    def configuration(name: object, *, target: str) -> tuple[str, AssistantSelection]:
         selected = str(name or "").strip()
         value = configurations.get(selected)
         if value is None:
@@ -165,20 +170,18 @@ def project_assistant_routing(
                 f"configuration {selected!r}. Define it in "
                 "[assistants.configurations] in zippergen.toml."
             )
-        backend = str(value.get("backend") or "").strip().casefold()
-        if backend not in set(ASSISTANT_BACKENDS):
-            raise SystemExit(
-                f"Assistant configuration {selected!r} must select one of: "
-                + ", ".join(ASSISTANT_BACKENDS)
-                + "."
-            )
-        return selected, backend
+        try:
+            concrete = normalize_assistant_selection(value)
+        except ValueError as exc:
+            raise SystemExit(f"Assistant configuration {selected!r}: {exc}") from exc
+        assert concrete is not None
+        return selected, concrete
 
     default_name = str(profile.get("default") or "").strip()
     default = fallback_default
     if default_name:
         _name, default = configuration(default_name, target="the default")
-    overrides: dict[str, str] = {}
+    overrides: dict[str, AssistantSelection] = {}
     for group in ("lifelines", "actions"):
         raw = profile.get(group) or {}
         if not isinstance(raw, Mapping):
@@ -201,8 +204,8 @@ def project_assistant_routing(
 def apply_assistant_overrides(
     routing: AssistantRouting,
     *,
-    default_backend: str | None = None,
-    overrides: Mapping[str, str] | None = None,
+    default_backend: AssistantSelection | None = None,
+    overrides: Mapping[str, AssistantSelection] | None = None,
     workflow: Workflow,
     module: ModuleType | None = None,
 ) -> AssistantRouting:
@@ -244,35 +247,38 @@ def resolved_assistant_actions(
         target = f"{participant}.{action_name}"
         action = definitions[action_name]
         configuration: str | None = None
-        if target in actions:
-            configuration = str(actions[target])
-            backend = routing.overrides.get(target)
-            source = "action assignment"
-        elif participant in lifelines:
-            configuration = str(lifelines[participant])
-            backend = routing.overrides.get(participant)
-            source = "participant assignment"
+        selected = (
+            routing.overrides.get(target)
+            or routing.overrides.get(participant)
+            or routing.default_backend
+        )
+        settings = assistant_settings(selected) if selected else {}
+        if target in routing.overrides:
+            configuration = str(actions[target]) if target in actions else None
+            source = "action assignment" if configuration else "runtime action override"
+        elif participant in routing.overrides:
+            configuration = str(lifelines[participant]) if participant in lifelines else None
+            source = "participant assignment" if configuration else "runtime participant override"
         elif default_configuration:
             configuration = default_configuration
-            backend = routing.default_backend
             source = "default assignment"
         elif routing.default_backend:
-            backend = routing.default_backend
             source = "runtime default"
         else:
-            backend = None
             source = "missing"
         rows.append(
             ResolvedAssistantAction(
                 target=target,
                 participant=participant,
                 action=action_name,
-                backend=backend,
+                backend=settings.get("backend"),
                 configuration=configuration,
                 source=source,
                 access=action.access,
                 external_tools=action.external_tools,
                 shell=action.shell,
+                model=settings.get("model"),
+                reasoning_effort=settings.get("reasoning_effort"),
             )
         )
     return rows

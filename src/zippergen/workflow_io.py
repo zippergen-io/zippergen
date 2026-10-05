@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from types import ModuleType
 
 from zippergen.models import ModelSettings
+from zippergen.assistant_backends import AssistantSelection
 from zippergen.syntax import Lifeline, Workflow
 
 
@@ -38,8 +39,8 @@ class RunConfig:
     module: ModuleType
     llm: str | None
     llms: dict[str, str]
-    assistant: str | None
-    assistants: dict[str, str]
+    assistant: AssistantSelection | None
+    assistants: dict[str, AssistantSelection]
     llm_idle_timeout: float | None
     llm_settings: "Mapping[str, ModelSettings]"
     store_path: str | None

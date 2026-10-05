@@ -548,7 +548,17 @@ def _site_checks(
             from zippergen.assistant_backends import check_cli_assistant
 
             for backend in sorted(selected_assistant_backends):
-                result = check_cli_assistant(backend)
+                settings = {
+                    key: str(item[key])
+                    for item in [
+                        *resolved_assistants,
+                        *(assistant_configurations[name] for name in assistant_names
+                          if name in assistant_configurations),
+                    ]
+                    if item.get("backend") == backend
+                    for key in ("model", "reasoning_effort") if item.get(key)
+                }
+                result = check_cli_assistant(backend, settings=settings) if settings else check_cli_assistant(backend)
                 site_facts.append(
                     {
                         "kind": "assistant CLI",

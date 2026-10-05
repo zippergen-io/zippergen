@@ -161,6 +161,8 @@ def test_named_assistant_configuration_and_both_assignment_levels(
         "access": "write",
         "external_tools": "none",
         "shell": "restricted",
+        "model": None,
+        "reasoning_effort": None,
     }
     assert resolved["Reviewer.review"]["backend"] == "claude"
     assert resolved["Reviewer.review"]["source"] == "participant assignment"

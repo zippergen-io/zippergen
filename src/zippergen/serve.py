@@ -2413,10 +2413,15 @@ def _assistant_command(args) -> int:
                 ),
                 check=check,
             )
-            value = configure_assistant(workspace, name, backend)
+            value = configure_assistant(
+                workspace, name, backend,
+                model=args.model, reasoning_effort=args.reasoning_effort,
+            )
             print(
                 f"Saved assistant configuration {name}: "
                 f"{value['backend']}"
+                + (f", model={value['model']}" if "model" in value else "")
+                + (f", reasoning_effort={value['reasoning_effort']}" if "reasoning_effort" in value else "")
             )
             spec = assistant_backend_spec(value["backend"])
             print(
@@ -5445,6 +5450,13 @@ def _parse_cli_args(
         help="Coding-assistant CLI selected by this configuration.",
     )
     assistant_configure.add_argument("--project", help="Project root.")
+    assistant_configure.add_argument(
+        "--model", help="Pin a model ID or CLI alias for every turn and resume.",
+    )
+    assistant_configure.add_argument(
+        "--reasoning-effort", "--effort", dest="reasoning_effort",
+        help="Pin the CLI's reasoning effort on every turn; supported levels depend on the model.",
+    )
     assistant_assign = assistant_sub.add_parser(
         "assign",
         help="assign a configuration to a participant or exact action",

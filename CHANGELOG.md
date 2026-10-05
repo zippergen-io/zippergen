@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Named assistant configurations now accept `--model` and `--reasoning-effort`
+  (`--effort` alias), so participants and actions can select different models
+  within the same CLI backend. Pins are passed on every turn and session resume,
+  shown in configuration reports, and saved in durable-run/deployment records.
+  Existing configurations that only select a backend keep their behavior.
+
 - Assistant actions now retain one CLI conversation per participant, backend,
   workspace, and login location within a workflow execution. Durable resume
   restores conversation IDs from the store; native CLI session files must

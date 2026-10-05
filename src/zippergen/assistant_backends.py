@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from typing import TypeAlias
 
 from zippergen.assistant_progress import ProgressObserver, run_claude, run_codex
 from zippergen.syntax import AssistantAction, Json, validate_zvalue
@@ -20,6 +21,8 @@ __all__ = [
     "AssistantExecutionError",
     "make_cli_assistant_backend",
 ]
+
+AssistantSelection: TypeAlias = str | dict[str, str]
 
 
 class AssistantExecutionError(RuntimeError):
@@ -94,6 +97,7 @@ _ASSISTANT_BASE_ENVIRONMENT = {
 def _codex_command(
     executable: str, workspace: Path, action: "AssistantAction",
     session_id: str | None = None,
+    settings: Mapping[str, str] | None = None,
 ) -> list[str]:
     command = [
         executable,
@@ -124,6 +128,16 @@ def _codex_command(
         command.append("--ephemeral")
     elif session_id is not None:
         command.extend(["resume", session_id])
+    # Resume has its own model/config options: pass turn settings there too,
+    # so saved session defaults cannot replace the configured selection.
+    if settings:
+        if settings.get("model"):
+            command.extend(["--model", settings["model"]])
+        if settings.get("reasoning_effort"):
+            command.extend([
+                "--config",
+                "model_reasoning_effort=" + json.dumps(settings["reasoning_effort"]),
+            ])
     command.append("-")
     return command
 
@@ -131,6 +145,7 @@ def _codex_command(
 def _claude_command(
     executable: str, workspace: Path, action: "AssistantAction",
     session_id: str | None = None,
+    settings: Mapping[str, str] | None = None,
 ) -> list[str]:
     tools = ["Read", "Glob", "Grep"]
     if action.access == "write":
@@ -158,6 +173,11 @@ def _claude_command(
                 "--strict-mcp-config",
             ]
         )
+    if settings:
+        if settings.get("model"):
+            command.extend(["--model", settings["model"]])
+        if settings.get("reasoning_effort"):
+            command.extend(["--effort", settings["reasoning_effort"]])
     if action.session == "fresh":
         command.append("--no-session-persistence")
     elif session_id is not None:
@@ -289,6 +309,8 @@ class AssistantBackendSpec:
     decode_output: Callable[[str], str]
     #: Native conversation ID to retain after a successful turn.
     session_id: Callable[[str], str | None]
+    #: Additional options to check when these settings are explicitly pinned.
+    setting_options: Mapping[str, str]
     #: Optional streaming runner emitting public tool metadata, never reasoning.
     progress_runner: Callable | None = None
 
@@ -314,6 +336,7 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         progress_runner=run_codex,
         decode_output=_decode_codex_output,
         session_id=_codex_session_id,
+        setting_options={"model": "--model", "reasoning_effort": "--config"},
     ),
     AssistantBackendSpec(
         name="claude",
@@ -337,6 +360,7 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         progress_runner=run_claude,
         decode_output=_decode_claude_output,
         session_id=_claude_session_id,
+        setting_options={"model": "--model", "reasoning_effort": "--effort"},
     ),
 )
 
@@ -356,6 +380,51 @@ def assistant_backend_spec(name: object) -> AssistantBackendSpec | None:
     """Return the adapter for one backend, or None when nothing declares it."""
 
     return _BACKENDS.get(str(name or "").strip().casefold())
+
+
+def assistant_settings(selection: object) -> dict[str, str]:
+    """Validate a concrete CLI selection without maintaining a model catalog.
+
+    Native CLIs validate model availability and supported effort levels. These
+    names change independently of ZipperGen, so retain explicit values and let
+    CLI errors propagate instead of guessing or silently changing the model.
+    """
+    if isinstance(selection, str):
+        raw: Mapping = {"backend": selection}
+    elif isinstance(selection, Mapping):
+        raw = selection
+    else:
+        raise ValueError("Assistant selection must be a backend name or an object.")
+    unknown = set(raw) - {"backend", "model", "reasoning_effort"}
+    if unknown:
+        raise ValueError("Unknown assistant setting(s): " + ", ".join(sorted(map(str, unknown))))
+    backend = str(raw.get("backend") or "").strip().casefold()
+    if backend not in ASSISTANT_BACKENDS:
+        raise ValueError(
+            "assistant backend must be one of "
+            f"{', '.join(ASSISTANT_BACKENDS)}, got {backend!r}"
+        )
+    result = {"backend": backend}
+    for name in ("model", "reasoning_effort"):
+        if name not in raw or raw[name] is None:
+            continue
+        value = raw[name]
+        if (
+            not isinstance(value, str) or not value.strip()
+            or value.strip().startswith("-")
+            or any(char.isspace() for char in value.strip())
+        ):
+            raise ValueError(f"Assistant {name} must be a non-empty identifier.")
+        result[name] = value.strip().casefold() if name == "reasoning_effort" else value.strip()
+    return result
+
+
+def normalize_assistant_selection(selection: object) -> AssistantSelection | None:
+    """Keep legacy backend strings compact; retain explicit model settings."""
+    if selection is None or selection == "":
+        return None
+    settings = assistant_settings(selection)
+    return settings["backend"] if len(settings) == 1 else settings
 
 
 def _assistant_environment(backend: str) -> dict[str, str]:
@@ -380,7 +449,9 @@ def _assistant_environment(backend: str) -> dict[str, str]:
     }
 
 
-def check_cli_assistant(backend: str) -> AssistantCliCheck:
+def check_cli_assistant(
+    backend: str, *, settings: Mapping[str, str] | None = None,
+) -> AssistantCliCheck:
     """Check that a local CLI exposes every option ZipperGen relies on.
 
     This does not run an assistant or inspect its login. Codex and Claude keep
@@ -422,9 +493,13 @@ def check_cli_assistant(backend: str) -> AssistantCliCheck:
             f"could not inspect CLI options: {type(exc).__name__}: {exc}",
         )
     help_text = f"{completed.stdout}\n{completed.stderr}"
+    required = (*spec.required_options, *(
+        option for name, option in spec.setting_options.items()
+        if settings and settings.get(name)
+    ))
     missing = [
         option
-        for option in spec.required_options
+        for option in required
         if option not in help_text
     ]
     if completed.returncode != 0:
@@ -439,7 +514,7 @@ def check_cli_assistant(backend: str) -> AssistantCliCheck:
             selected,
             executable,
             False,
-            "required safety option(s) missing: " + ", ".join(missing),
+            "required CLI option(s) missing: " + ", ".join(missing),
         )
     return AssistantCliCheck(
         selected,
@@ -560,10 +635,10 @@ def _bind_assistant_backend(backend, participant, *, endpoint=None, conn=None):
 
 
 def make_cli_assistant_backend(
-    default: str | None = None,
+    default: AssistantSelection | None = None,
     *,
     project_root: str | os.PathLike[str] | None = None,
-    routes: Mapping[str, str] | None = None,
+    routes: Mapping[str, AssistantSelection] | None = None,
     on_progress: ProgressObserver | None = None,
 ) -> Callable[[AssistantAction, dict[str, object]], dict[str, object]]:
     """Build a backend that invokes Codex CLI or Claude Code.
@@ -574,6 +649,9 @@ def make_cli_assistant_backend(
     participant, backend, and workspace within an execution. ``session="fresh"``
     actions run independently. Runtimes bind participant identity explicitly
     and durable runners save conversation IDs in their execution store.
+    A selection may be a backend name or an object containing ``backend`` and
+    optional ``model`` and ``reasoning_effort``. These pins are passed on every
+    invocation, including native session resumes.
 
     ``on_progress`` optionally observes public tool metadata. It receives an
     ``invocation.started`` marker synchronously, then best-effort tool progress
@@ -582,26 +660,11 @@ def make_cli_assistant_backend(
     success signal. The callback never receives model reasoning or raw output.
     """
 
-    if default is not None and default not in set(ASSISTANT_BACKENDS):
-        raise ValueError(
-            "assistant backend must be one of "
-            f"{', '.join(ASSISTANT_BACKENDS)}, got {default!r}"
-        )
+    default = normalize_assistant_selection(default)
     selected_routes = {
-        str(target): str(backend).casefold()
-        for target, backend in (routes or {}).items()
+        str(target): assistant_settings(selection)
+        for target, selection in (routes or {}).items()
     }
-    invalid = sorted(
-        target
-        for target, backend in selected_routes.items()
-        if backend not in set(ASSISTANT_BACKENDS)
-    )
-    if invalid:
-        raise ValueError(
-            "assistant routes must select one of "
-            f"{', '.join(ASSISTANT_BACKENDS)} for: "
-            + ", ".join(invalid)
-        )
     root = Path(project_root or Path.cwd()).expanduser().resolve()
     sessions: dict[str, str] = {}
     session_locks: dict[str, threading.Lock] = {}
@@ -622,7 +685,8 @@ def make_cli_assistant_backend(
             or selected_routes.get(participant)
             or default
         )
-        spec = assistant_backend_spec(selected)
+        settings = assistant_settings(selected) if selected is not None else {}
+        spec = assistant_backend_spec(settings.get("backend"))
         if spec is None:
             raise AssistantExecutionError(
                 f"Assistant action '{action.name}' has no backend. Assign a "
@@ -682,7 +746,7 @@ def make_cli_assistant_backend(
                         "Stored assistant conversation ID is invalid."
                     )
             prompt = _assistant_prompt(action, inputs)
-            command = spec.command(executable, workspace, action, session_id)
+            command = spec.command(executable, workspace, action, session_id, settings)
             stdin = prompt
             runner = subprocess.run
             if on_progress is not None and spec.progress_runner is not None:

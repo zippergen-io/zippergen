@@ -152,5 +152,7 @@ _ASSISTANT_SOURCE_WORDS = {
     "participant assignment": "participant",
     "default assignment": "default",
     "runtime default": "default",
+    "runtime action override": "action",
+    "runtime participant override": "participant",
     "missing": "unassigned",
 }

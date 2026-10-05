@@ -606,14 +606,18 @@ def _render_assistant_tables(
     assistants = report["assistants"]
     assert isinstance(assistants, dict)
     configuration_rows = [
-        (item.get("name"), item.get("backend"))
+        (
+            item.get("name"), item.get("backend"),
+            item.get("model") or "CLI default",
+            item.get("reasoning_effort") or "CLI default",
+        )
         for item in assistants.get("configurations") or []
         if isinstance(item, dict)
     ]
     _render_columns_or_empty(
         renderer,
         "Configurations" if compact_titles else "Assistant configurations",
-        ("Name", "Backend"),
+        ("Name", "Backend", "Model", "Effort"),
         configuration_rows,
         empty="No configurations.",
     )
@@ -631,8 +635,10 @@ def _render_assistant_tables(
         report,
         ("assistant",),
         subject="Action",
-        resolved_header="Backend",
-        resolved=lambda item: item.get("effective"),
+        resolved_header="Backend / Model / Effort",
+        resolved=lambda item: " / ".join(str(value) for value in (
+            item.get("effective"), item.get("model"), item.get("reasoning_effort"),
+        ) if value),
         empty="No participant runs an assistant.",
     )
     # Access, tools and shell are declared on the `@assistant` action, not

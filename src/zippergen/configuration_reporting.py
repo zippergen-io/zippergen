@@ -258,6 +258,8 @@ def _effective_routing(
                         "kind": "assistant",
                         "configuration": item.get("configuration") or "missing",
                         "effective": backend or "missing",
+                        "model": item.get("model"),
+                        "reasoning_effort": item.get("reasoning_effort"),
                         "available": available,
                         "source": _ASSISTANT_SOURCE_WORDS.get(
                             str(item.get("source") or ""), "default"
@@ -579,6 +581,8 @@ def configuration_report(
                     "access": item.access,
                     "external_tools": item.external_tools,
                     "shell": item.shell,
+                    "model": item.model,
+                    "reasoning_effort": item.reasoning_effort,
                 }
                 for item in effective
             ]

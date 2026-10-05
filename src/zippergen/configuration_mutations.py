@@ -101,10 +101,15 @@ def configure_assistant(
     workspace: Workspace,
     name: str,
     backend: str,
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, str]:
     """Save one named Codex or Claude configuration."""
 
-    return workspace.save_assistant_configuration(name, backend)
+    return workspace.save_assistant_configuration(
+        name, backend, model=model, reasoning_effort=reasoning_effort,
+    )
 
 
 def assistant_target_problem(workspace: Workspace, target: str) -> str | None:

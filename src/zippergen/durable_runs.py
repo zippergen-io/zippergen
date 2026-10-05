@@ -20,6 +20,7 @@ from zippergen.assistant_configuration import (
     normalize_assistant_overrides,
     project_assistant_routing,
 )
+from zippergen.assistant_backends import AssistantSelection, normalize_assistant_selection
 from zippergen.deployment import DeploymentField, deployment_spec_from_module
 from zippergen.human_backends import (
     make_cli_human_backend,
@@ -516,8 +517,8 @@ def _run_setup_hook(
     llms: dict[str, str],
     llm_idle_timeout: float | None,
     llm_settings: Mapping[str, "ModelSettings"],
-    assistant: str | None,
-    assistants: dict[str, str],
+    assistant: AssistantSelection | None,
+    assistants: dict[str, AssistantSelection],
     store_path: str,
     inputs: dict[str, object],
     options: dict[str, object],
@@ -555,8 +556,8 @@ def run_durable(
     llms: dict[str, str] | None = None,
     llm_idle_timeout: float | None = None,
     llm_settings: Mapping[str, "ModelSettings"] | None = None,
-    assistant: str | None = None,
-    assistants: dict[str, str] | None = None,
+    assistant: AssistantSelection | None = None,
+    assistants: dict[str, AssistantSelection] | None = None,
     options: dict[str, object] | None = None,
     timeout: float = 0.0,
     interactive: bool = True,
@@ -607,8 +608,8 @@ def _run_durable_in_project(
     llms: dict[str, str] | None,
     llm_idle_timeout: float | None,
     llm_settings: Mapping[str, "ModelSettings"] | None,
-    assistant: str | None,
-    assistants: dict[str, str] | None,
+    assistant: AssistantSelection | None,
+    assistants: dict[str, AssistantSelection] | None,
     options: dict[str, object] | None,
     timeout: float,
     interactive: bool,
@@ -671,9 +672,10 @@ def _run_durable_in_project(
             else None
         )
         selected_settings = _recorded_model_settings(record)
-        selected_assistant = (
-            str(record["assistant"]) if record.get("assistant") else None
-        )
+        try:
+            selected_assistant = normalize_assistant_selection(record.get("assistant"))
+        except ValueError as exc:
+            raise SystemExit(f"Stored assistant configuration: {exc}") from exc
         selected_assistants = normalize_assistant_overrides(
             record.get("assistants")
         )

@@ -189,10 +189,17 @@ zg assistant assign Maintainer coding-agent
 zg assistant check
 ```
 
-Use `Participant.action` when one assistant action needs a different backend.
-The named configuration selects the CLI only. Keep the fixed instructions and
-the `access`, `external_tools`, and `shell` permissions on `@assistant`.
-`zg assistant check` verifies the executable and required safety options. It
+Use `Participant.action` when one assistant action needs a different configuration.
+Named configurations select the CLI and may pin its model and reasoning effort:
+`zg assistant configure NAME BACKEND --model MODEL --reasoning-effort LEVEL`.
+Pass both settings explicitly when the user requires reproducible role choices;
+do not rely on user CLI configuration, which isolation flags may ignore.
+Settings apply on every turn, including conversation resumes, and are saved in
+durable-run and deployment records. Model IDs and supported effort levels are
+validated by the native CLI; model aliases can change their mapping. Keep the
+fixed instructions and the `access`, `external_tools`, and `shell` permissions
+on `@assistant`. `zg assistant check` verifies the executable and required CLI
+options. It
 does not authenticate. Codex and Claude keep their own login systems. Never ask
 the user for those credentials in the agent conversation.
 

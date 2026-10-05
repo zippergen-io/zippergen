@@ -945,7 +945,7 @@ def _doctor_checks(
         )
         assistant_routing = effective_assistant_routes(
             workflow,
-            str(profile["assistant"]) if profile.get("assistant") else None,
+            profile.get("assistant"),
             assistant_overrides,
             module=module,
         )
@@ -985,7 +985,13 @@ def _doctor_checks(
         # inside a supervised service.
         with _profile_environment(profile):
             for selected in sorted(selected_assistants):
-                result = check_cli_assistant(selected)
+                settings = {
+                    key: value
+                    for item in resolved if item.backend == selected
+                    for key, value in (("model", item.model), ("reasoning_effort", item.reasoning_effort))
+                    if value is not None
+                }
+                result = check_cli_assistant(selected, settings=settings) if settings else check_cli_assistant(selected)
                 if result.supported:
                     checks.append(_doctor_check(
                         "ok",

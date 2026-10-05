@@ -334,6 +334,23 @@ zg assistant assign Maintainer coding-agent
 zg assistant check
 ```
 
+Pin the model and reasoning effort independently for each participant:
+
+```bash
+zg assistant configure impl codex --model gpt-6.1-sol --reasoning-effort high
+zg assistant configure rev claude --model opus --reasoning-effort high
+zg assistant assign Implementer impl
+zg assistant assign Reviewer rev
+```
+
+Both settings are optional. When supplied, ZipperGen passes them explicitly
+on every turn, including session resumes, and saves them in durable-run and
+deployment records. Use a full model ID when you need a stable selection;
+aliases such as `opus` follow the CLI's model mapping. Model availability and
+supported effort levels depend on the CLI and account. `zg assistant check`
+checks the required flags without making a model request. Reconfiguring a name
+replaces its settings; omit the optional flags to return to CLI defaults.
+
 Assign `Maintainer.action_name` when only one action needs a different
 backend. The `@assistant` declaration still controls filesystem access,
 external tools, and shell access. Codex and Claude use their own login.

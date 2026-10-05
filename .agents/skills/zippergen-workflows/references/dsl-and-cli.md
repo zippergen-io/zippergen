@@ -437,6 +437,34 @@ The same routing applies to plain runs, durable runs, and deployments. The
 low-level Python API may still pass `assistant_backend=` directly. Project
 routing is the only static way to select a backend for an `@assistant` action.
 
+Named configurations can also pin `model` and `reasoning_effort` independently
+for each participant or action:
+
+```bash
+zg assistant configure impl codex --model gpt-6.1-sol --reasoning-effort high
+zg assistant configure rev claude --model opus --reasoning-effort high
+zg assistant assign Implementer impl
+zg assistant assign Reviewer rev
+```
+
+These optional strings are stored under `[assistants.configurations.NAME]` in
+`zippergen.toml`. Exact-action assignments take precedence over participant
+assignments, then the default; each selects its whole configuration. Codex
+receives `--model` and `--config model_reasoning_effort="LEVEL"`; Claude receives
+`--model` and `--effort`. Explicit settings are passed on every turn, including
+resumes, even when isolation flags disable user configuration. Durable runs and
+deployments retain these concrete settings, so later project edits do not
+change their choices on restart. The Python factory also accepts a selection
+object such as `{"backend": "codex", "model": "gpt-6.1-sol", "reasoning_effort": "high"}`
+as its default or a route value.
+
+Use a full model ID for a stable choice; aliases follow the CLI's model mapping.
+ZipperGen validates the setting shape, while the CLI checks model availability
+and supported effort levels. `zg assistant check` checks that the required
+flags are present without generating a response. Omitted settings use CLI
+defaults; rerunning `configure` replaces the named configuration and removes
+any omitted pins.
+
 The default `session="participant"` resumes the participant's CLI conversation
 across actions and loop iterations in one workflow execution. Conversations
 are separate per physical participant, backend, workspace, and CLI login

@@ -83,6 +83,7 @@ def test_every_declared_backend_brings_its_own_adapter(spec) -> None:
     assert callable(spec.help_command)
     assert callable(spec.command)
     assert callable(spec.decode_output)
+    assert set(spec.setting_options) == {"model", "reasoning_effort"}
 
     help_command = spec.help_command("/usr/bin/thing")
     assert help_command[0] == "/usr/bin/thing"
@@ -120,6 +121,11 @@ def test_each_backend_builds_a_command_only_it_would_build(spec, tmp_path) -> No
     used = set(built)
     action.session = "participant"
     used.update(spec.command(f"/usr/bin/{spec.name}", tmp_path, action, "session-1"))
+    configured = spec.command(
+        f"/usr/bin/{spec.name}", tmp_path, action, "session-1",
+        {"model": "exact-model", "reasoning_effort": "high"},
+    )
+    assert set(spec.setting_options.values()) <= set(configured)
     declared = set(spec.required_options)
     assert declared <= used | {opt for opt in declared if opt.startswith("--config")}
 

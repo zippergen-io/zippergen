@@ -28,7 +28,7 @@ from typing import Any
 from typing import TypeVar, TypedDict
 
 from zippergen.value_codec import decode_value, encode_value
-from zippergen.assistant_backends import ASSISTANT_BACKENDS
+from zippergen.assistant_backends import AssistantSelection, assistant_settings
 from zippergen.connectors import CONNECTOR_SETTING_NAMES, connector_kind_spec
 
 
@@ -2078,32 +2078,31 @@ class Workspace:
                 raise WorkspaceError(
                     f"Assistant configuration {name!r} must be a table."
                 )
-            backend = str(configuration.get("backend") or "").strip().casefold()
-            if backend not in set(ASSISTANT_BACKENDS):
-                raise WorkspaceError(
-                    f"Assistant configuration {name!r} must select one of: "
-                    + ", ".join(ASSISTANT_BACKENDS)
-                    + "."
-                )
-            result[str(name)] = {"backend": backend}
+            try:
+                result[str(name)] = assistant_settings(configuration)
+            except ValueError as exc:
+                raise WorkspaceError(f"Assistant configuration {name!r}: {exc}") from exc
         return result
 
     def save_assistant_configuration(
         self,
         name: str,
         backend: str,
+        *,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> dict[str, str]:
-        """Save one portable coding-assistant backend selection."""
+        """Save one portable CLI selection with optional model and effort pins."""
 
         normalized = _configuration_name(
             name, subject="assistant configuration"
         )
-        selected = backend.strip().casefold()
-        if selected not in set(ASSISTANT_BACKENDS):
-            raise WorkspaceError(
-                "An assistant configuration backend must be 'codex' or "
-                "'claude'."
-            )
+        try:
+            selected = assistant_settings({
+                "backend": backend, "model": model, "reasoning_effort": reasoning_effort,
+            })
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from exc
         manifest = self.project_manifest()
         assistants = _object_table(
             manifest["assistants"],
@@ -2127,7 +2126,7 @@ class Workspace:
                 f"Assistant configuration {normalized!r} conflicts with "
                 f"existing name {conflicting!r}."
             )
-        configurations[normalized] = {"backend": selected}
+        configurations[normalized] = selected
         assistants["configurations"] = configurations
         self._write_project_configuration(assistants=assistants)
         return self.assistant_configurations()[normalized]
@@ -2353,8 +2352,8 @@ class Workspace:
         llms: dict[str, str] | None = None,
         llm_idle_timeout: float | None = None,
         llm_settings: Mapping[str, Any] | None = None,
-        assistant: str | None = None,
-        assistants: dict[str, str] | None = None,
+        assistant: AssistantSelection | None = None,
+        assistants: dict[str, AssistantSelection] | None = None,
         options: dict[str, object] | None = None,
         connectors: dict[str, object] | None = None,
         store_path: str | None = None,

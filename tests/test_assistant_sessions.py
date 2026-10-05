@@ -252,7 +252,7 @@ flag = "resume" if Path(__file__).name == "codex" else "--resume"
 resumed = command[command.index(flag) + 1] if flag in command else None
 session_id = resumed or str(uuid.uuid4())
 with Path({str(log)!r}).open("a") as stream:
-    stream.write(json.dumps({{"resumed": resumed, "session_id": session_id}}) + "\\n")
+    stream.write(json.dumps({{"resumed": resumed, "session_id": session_id, "command": command}}) + "\\n")
 sys.stdin.read()
 marker = Path({str(marker)!r})
 if resumed and not marker.exists():
@@ -280,7 +280,10 @@ from zippergen import run_sqlite, make_cli_assistant_backend
 result = run_sqlite(
     editing_round, [Developer], {{"Developer": {{"request": "fix"}}}},
     store_path=sys.argv[1], timeout=5,
-    assistant_backend=make_cli_assistant_backend({backend_name!r}, project_root={str(tmp_path)!r}),
+    assistant_backend=make_cli_assistant_backend(
+        {{"backend": {backend_name!r}, "model": "exact-model", "reasoning_effort": "high"}},
+        project_root={str(tmp_path)!r},
+    ),
 )
 print(json.dumps(result))
 ''')
@@ -303,6 +306,13 @@ print(json.dumps(result))
     assert len(calls) == 3
     assert calls[0]["resumed"] is None
     assert calls[1]["resumed"] == calls[2]["resumed"] == calls[0]["session_id"]
+    for call in calls:
+        command = call["command"]
+        assert command[command.index("--model") + 1] == "exact-model"
+        if backend_name == "codex":
+            assert 'model_reasoning_effort="high"' in command
+        else:
+            assert command[command.index("--effort") + 1] == "high"
     # Completed recovery returns the committed result without another CLI call.
     assert execute(store).returncode == 0
     assert len(log.read_text().splitlines()) == 3
