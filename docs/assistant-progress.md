@@ -17,17 +17,24 @@ must be thread-safe and reject progress after an invocation has ended.
 
 Tool records expose `kind` (`command` or `file`), `phase` (`started` or `completed`),
 and `tool_id` where available. Commands include their command string and observed
-exit code; files include operation/path and status where available. Embeddings
+exit code, plus optional public `output` on completion. File reads may carry
+`offset` and `limit`; other files include operation/path and status where available. Embeddings
 should classify these into short UI labels rather than display raw arguments.
 They must not treat progress, a successful test command, or missing progress as
 an action result, review verdict, protocol message or semantic state transition.
 
 Codex uses its existing `--json` stream. Claude switches only its output format to
 `stream-json --verbose`, then extracts the final result envelope for the existing
-result and session validators. Claude tool-use blocks report started tools; this
-adapter does not infer tool completion from silence. See the official
+result and session validators. Claude tool-use blocks report started tools; corresponding `tool_result` blocks
+report completion, correlated by tool-use ID within one invocation. `is_error`
+is reported as status, never fabricated into a numeric exit code. This adapter
+does not infer completion from silence. See the official
 [Claude programmatic CLI documentation](https://code.claude.com/docs/en/headless).
-Neither adapter forwards reasoning, assistant text, tool output, patches, arbitrary
+Public command results are optional and bounded to 262,144 characters per event;
+`output_truncated` explicitly marks a longer result. Embeddings must keep arbitrary
+result text out of short UI labels and handle it with the same care as other local
+trace payloads. File-read bodies remain excluded.
+Neither adapter forwards reasoning, assistant text, patches, arbitrary
 input objects, token deltas or unknown event types through the observer.
 
 Both output pipes are drained concurrently and the input writer cannot deadlock

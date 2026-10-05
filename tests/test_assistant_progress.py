@@ -15,7 +15,12 @@ from zippergen.assistant_backends import (
     _bind_assistant_backend,
     _new_assistant_execution,
 )
-from zippergen.assistant_progress import claude_progress, codex_progress, run_claude, run_codex
+from zippergen.assistant_progress import (
+    claude_progress,
+    codex_progress,
+    run_claude,
+    run_codex,
+)
 
 
 @assistant(instructions="Do the work.", access="write")
@@ -78,6 +83,8 @@ def test_public_parsers_exclude_reasoning_text_output_and_unknown_tools():
             "tool_id": "t3",
             "command": "pytest",
             "exit_code": 1,
+            "output": "private",
+            "output_truncated": False,
         }
     ]
 
@@ -240,3 +247,63 @@ def test_progress_cannot_replace_missing_final_result(tmp_path, monkeypatch):
     backend = make_cli_assistant_backend("codex", project_root=tmp_path, on_progress=lambda e: None)
     with pytest.raises(AssistantExecutionError):
         backend(work, {"task": "work"})
+
+
+def test_claude_results_correlate_with_tools_only_within_one_invocation():
+    from zippergen.assistant_progress import ClaudeProgress
+
+    decoder = ClaudeProgress()
+    starts = decoder(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "read",
+                        "name": "Read",
+                        "input": {"file_path": "notes.tex", "offset": 70, "limit": 71},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "bash",
+                        "name": "Bash",
+                        "input": {"command": "pytest"},
+                    },
+                ]
+            },
+        }
+    )
+    assert starts[0]["offset"] == 70 and starts[0]["limit"] == 71
+    results = {
+        "type": "user",
+        "message": {
+            "content": [
+                {"type": "tool_result", "tool_use_id": "bash", "content": "14 passed in 1.2s"},
+                {"type": "tool_result", "tool_use_id": "read", "content": "private file body"},
+                {"type": "tool_result", "tool_use_id": "unknown", "content": "private"},
+            ]
+        },
+    }
+    completed = decoder(results)
+    assert completed[0]["command"] == "pytest"
+    assert completed[0]["output"] == "14 passed in 1.2s"
+    assert "exit_code" not in completed[0]
+    assert "output" not in completed[1]
+    assert "private" not in str(completed)
+    assert decoder(results) == []
+    assert ClaudeProgress()(results) == []
+
+
+def test_command_output_memory_is_bounded_and_marked():
+    result = codex_progress(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "aggregated_output": "x" * 300000,
+            },
+        }
+    )[0]
+    assert len(result["output"]) == 262144
+    assert result["output_truncated"] is True

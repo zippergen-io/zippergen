@@ -29,6 +29,7 @@ def codex_progress(event: dict[str, Any]) -> list[dict[str, Any]]:
                 "kind": "command",
                 "command": item.get("command", ""),
                 "exit_code": item.get("exit_code"),
+                **_output(item.get("aggregated_output")),
             }
         ]
     if item.get("type") == "file_change":
@@ -46,7 +47,7 @@ def codex_progress(event: dict[str, Any]) -> list[dict[str, Any]]:
             for change in changes
             if isinstance(change, dict)
         ]
-    # In particular: reasoning, agent_message, raw tool output and unknown items
+    # In particular: reasoning, agent_message and unknown items
     # do not cross this observational boundary.
     return []
 
@@ -76,9 +77,69 @@ def claude_progress(event: dict[str, Any]) -> list[dict[str, Any]]:
                     "kind": "file",
                     "operation": name.lower(),
                     "path": args.get("file_path", args.get("path", "")),
+                    **{
+                        key: args[key]
+                        for key in ("offset", "limit")
+                        if name == "Read" and key in args
+                    },
                 }
             )
     return result
+
+
+def _output(value: Any) -> dict[str, Any]:
+    """Bound observer memory without interpreting public command results."""
+    if not isinstance(value, str):
+        return {}
+    return {"output": value[:262144], "output_truncated": len(value) > 262144}
+
+
+class ClaudeProgress:
+    """Tool correlation belongs to one CLI invocation, not the workflow/session."""
+
+    def __init__(self) -> None:
+        self.pending: dict[str, dict[str, Any]] = {}
+
+    def __call__(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        started = claude_progress(event)
+        for item in started:
+            if isinstance(item.get("tool_id"), str):
+                self.pending[item["tool_id"]] = item
+                if len(self.pending) > 256:
+                    del self.pending[next(iter(self.pending))]
+        if event.get("type") != "user":
+            return started
+        message = event.get("message")
+        blocks = message.get("content", []) if isinstance(message, dict) else []
+        if not isinstance(blocks, list):
+            return []
+        result = []
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            tool_id = block.get("tool_use_id")
+            original = self.pending.pop(tool_id, None) if isinstance(tool_id, str) else None
+            if original is None:
+                continue
+            completed = {
+                **original,
+                "phase": "completed",
+                "status": "failed" if block.get("is_error") else "completed",
+            }
+            if original["kind"] == "command":
+                content = block.get("content")
+                if isinstance(content, list):
+                    content = "\n".join(
+                        b["text"]
+                        for b in content
+                        if isinstance(b, dict)
+                        and b.get("type") == "text"
+                        and isinstance(b.get("text"), str)
+                    )
+                completed.update(_output(content))
+                # is_error is not an exit code. Preserve that distinction.
+            result.append(completed)
+        return result
 
 
 class _Observer:
@@ -219,4 +280,4 @@ def run_claude(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess
     command = list(command)
     command[command.index("--output-format") + 1] = "stream-json"
     command.append("--verbose")
-    return _stream(command, decoder=claude_progress, final_only=True, **kwargs)
+    return _stream(command, decoder=ClaudeProgress(), final_only=True, **kwargs)
