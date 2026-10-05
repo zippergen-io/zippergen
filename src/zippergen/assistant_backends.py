@@ -7,11 +7,13 @@ import os
 import shutil
 import subprocess
 import threading
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
+from zippergen.assistant_progress import ProgressObserver, run_claude, run_codex
 from zippergen.syntax import AssistantAction, Json, validate_zvalue
 
 __all__ = [
@@ -287,6 +289,8 @@ class AssistantBackendSpec:
     decode_output: Callable[[str], str]
     #: Native conversation ID to retain after a successful turn.
     session_id: Callable[[str], str | None]
+    #: Optional streaming runner emitting public tool metadata, never reasoning.
+    progress_runner: Callable | None = None
 
 
 ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
@@ -307,6 +311,7 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         ),
         help_command=lambda executable: [executable, "exec", "--help"],
         command=_codex_command,
+        progress_runner=run_codex,
         decode_output=_decode_codex_output,
         session_id=_codex_session_id,
     ),
@@ -329,6 +334,7 @@ ASSISTANT_BACKEND_SPECS: tuple[AssistantBackendSpec, ...] = (
         ),
         help_command=lambda executable: [executable, "--help"],
         command=_claude_command,
+        progress_runner=run_claude,
         decode_output=_decode_claude_output,
         session_id=_claude_session_id,
     ),
@@ -558,6 +564,7 @@ def make_cli_assistant_backend(
     *,
     project_root: str | os.PathLike[str] | None = None,
     routes: Mapping[str, str] | None = None,
+    on_progress: ProgressObserver | None = None,
 ) -> Callable[[AssistantAction, dict[str, object]], dict[str, object]]:
     """Build a backend that invokes Codex CLI or Claude Code.
 
@@ -567,6 +574,12 @@ def make_cli_assistant_backend(
     participant, backend, and workspace within an execution. ``session="fresh"``
     actions run independently. Runtimes bind participant identity explicitly
     and durable runners save conversation IDs in their execution store.
+
+    ``on_progress`` optionally observes public tool metadata. It receives an
+    ``invocation.started`` marker synchronously, then best-effort tool progress
+    on an observer thread, with invocation/participant/action identity. It must
+    be thread-safe; errors are ignored. No progress is a workflow message or a
+    success signal. The callback never receives model reasoning or raw output.
     """
 
     if default is not None and default not in set(ASSISTANT_BACKENDS):
@@ -671,8 +684,24 @@ def make_cli_assistant_backend(
             prompt = _assistant_prompt(action, inputs)
             command = spec.command(executable, workspace, action, session_id)
             stdin = prompt
+            runner = subprocess.run
+            if on_progress is not None and spec.progress_runner is not None:
+                context = {
+                    "invocation_id": uuid.uuid4().hex, "participant": participant,
+                    "endpoint": endpoint or participant, "action": action.name,
+                    "backend": spec.name,
+                }
+
+                def progress(event):
+                    try:
+                        on_progress({**context, **event})
+                    except Exception:
+                        pass
+
+                progress({"kind": "invocation.started"})
+                runner = partial(spec.progress_runner, on_progress=progress)
             try:
-                completed = subprocess.run(
+                completed = runner(
                     command,
                     cwd=workspace,
                     env=environment,
@@ -695,6 +724,10 @@ def make_cli_assistant_backend(
             except OSError as exc:
                 raise AssistantExecutionError(
                     f"Could not start assistant action '{action.name}': {exc}"
+                ) from exc
+            except ValueError as exc:
+                raise AssistantExecutionError(
+                    f"{spec.label} returned malformed streamed output: {exc}"
                 ) from exc
             if completed.returncode != 0:
                 detail = (completed.stderr or completed.stdout).strip()
@@ -725,6 +758,6 @@ def make_cli_assistant_backend(
     return _CliAssistantBackend(
         run_assistant,
         lambda: make_cli_assistant_backend(
-            default, project_root=root, routes=selected_routes,
+            default, project_root=root, routes=selected_routes, on_progress=on_progress,
         ),
     )
