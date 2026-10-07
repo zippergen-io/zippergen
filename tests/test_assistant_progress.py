@@ -8,7 +8,6 @@ import time
 from dataclasses import replace
 
 import pytest
-
 from zippergen import AssistantExecutionError, assistant, make_cli_assistant_backend
 from zippergen.assistant_backends import (
     _BACKENDS,
@@ -307,3 +306,48 @@ def test_command_output_memory_is_bounded_and_marked():
     )[0]
     assert len(result["output"]) == 262144
     assert result["output_truncated"] is True
+
+
+def test_only_explicit_public_ui_status_crosses_progress_boundary():
+    text = (
+        "<ui-status>Updating the office layout.\nPreserving the character animations.</ui-status>"
+    )
+    expected = [
+        {
+            "kind": "ui_status",
+            "phase": "completed",
+            "text": "Updating the office layout.\nPreserving the character animations.",
+        }
+    ]
+    assert (
+        codex_progress({"type": "item.completed", "item": {"type": "agent_message", "text": text}})
+        == expected
+    )
+    assert (
+        claude_progress(
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
+        )
+        == expected
+    )
+    for kind in ["reasoning", "unknown"]:
+        assert (
+            codex_progress({"type": "item.completed", "item": {"type": kind, "text": text}}) == []
+        )
+    assert (
+        claude_progress(
+            {"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": text}]}}
+        )
+        == []
+    )
+    for invalid in [
+        text + " private trailing prose",
+        "<ui-status>unfinished",
+        "<ui-status>" + "x" * 241 + "</ui-status>",
+        "<ui-status>a\nb\nc\nd</ui-status>",
+    ]:
+        assert (
+            codex_progress(
+                {"type": "item.completed", "item": {"type": "agent_message", "text": invalid}}
+            )
+            == []
+        )

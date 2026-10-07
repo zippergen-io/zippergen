@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import subprocess
 import threading
 from collections.abc import Callable
@@ -16,11 +17,30 @@ from typing import Any
 ProgressObserver = Callable[[dict[str, Any]], None]
 
 
+# Status is deliberately authored for a UI, never extracted from reasoning or
+# guessed from arbitrary assistant prose. Keep final-result parsing unchanged.
+UI_STATUS_VERSION = 1
+
+
+def ui_status(text: Any) -> list[dict[str, Any]]:
+    if not isinstance(text, str) or len(text) > 2000:
+        return []
+    match = re.fullmatch(r"\s*<ui-status>([^<>]{1,240})</ui-status>\s*", text)
+    if not match:
+        return []
+    lines = [" ".join(line.split()) for line in match[1].splitlines() if line.strip()]
+    if not 1 <= len(lines) <= 3:
+        return []
+    return [{"kind": "ui_status", "phase": "completed", "text": "\n".join(lines)}]
+
+
 def codex_progress(event: dict[str, Any]) -> list[dict[str, Any]]:
     phase = {"item.started": "started", "item.completed": "completed"}.get(event.get("type"))
     item = event.get("item")
     if phase is None or not isinstance(item, dict):
         return []
+    if phase == "completed" and item.get("type") == "agent_message":
+        return ui_status(item.get("text"))
     common = {"phase": phase, "tool_id": item.get("id")}
     if item.get("type") == "command_execution":
         return [
@@ -47,7 +67,7 @@ def codex_progress(event: dict[str, Any]) -> list[dict[str, Any]]:
             for change in changes
             if isinstance(change, dict)
         ]
-    # In particular: reasoning, agent_message and unknown items
+    # In particular: reasoning, unmarked agent messages and unknown items
     # do not cross this observational boundary.
     return []
 
@@ -61,6 +81,8 @@ def claude_progress(event: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     result = []
     for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            result.extend(ui_status(block.get("text")))
         if not isinstance(block, dict) or block.get("type") != "tool_use":
             continue
         args = block.get("input")
