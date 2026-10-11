@@ -1,62 +1,60 @@
 # Finite-prefix completion in optional-review workflows
 
-ZipperGen experimental report, 11 October 2026. Runs conducted from
+ZipperGen experimental report, 11 October 2026. Runs took place from
 30 September to 4 October 2026.
 
-This pilot measured the effort required by two coding agents to construct Lean
-proofs of completion for a family of distributed reviewer workflows. The property
-is inherited from a general projection theorem when the workflows are specified
-as well-typed choreographies. The principal measurements below concern recovering
-that property directly from the projected local programs.
+We asked two coding agents to prove completion in Lean for a family of reviewer
+workflows. Well-typed choreographies already provide this guarantee through a
+general projection theorem. This pilot measured how long the agents took to prove
+the same property directly from the projected local programs.
 
 ## Workflow and property
 
 Each execution handles one request. An Agent starts a Worker and independently
 decides whether each of *k* reviewers is required. Required reviewers assess the
 request and send verdicts to a Finalizer. The Finalizer receives the required
-verdicts in reviewer-index order, then the Worker's result, and resolves the
-request. Worker preparation and reviewer actions can proceed independently,
-subject to the endpoint programs and asynchronous FIFO communication. Projection
-provides the control messages needed to communicate branch decisions.
+verdicts in reviewer order, then the Worker's result, and resolves the request.
+The Worker can prepare while reviews are pending. Participants follow their local
+programs and communicate through asynchronous FIFO channels. Projection adds the
+control messages that tell participants which branches to take.
 
 The target, [CompletionGoal](frozen/k1/CompletionGoal.lean), states that every
-valid finite distributed execution prefix has a complete extension preserving
-each participant's existing sequence of events. In a complete execution all local
-programs have terminated and all sent messages have been received. This is an
-existential completion property: it does not assert that every execution
-terminates, or that a human eventually responds. Assessment and resolution are
-opaque actions; the theorem does not establish review quality or compliance with
-verdict values.
+valid finite distributed execution prefix can be extended to a complete execution
+without changing any participant's past events. A complete execution ends all
+local programs and leaves no messages unreceived. The property says that completion
+is possible. It does not say that every execution terminates or that a human
+eventually responds. Assessment and resolution are opaque actions. The theorem
+does not establish review quality or whether the final action follows the verdicts.
 
-The family has fixed receive order and no repeated requests, spawning or
-cancellation. Results from other workflow families are not included.
+These workflows use a fixed receive order. They have no repeated requests,
+spawning or cancellation. This report covers only this family.
 
 ## Method
 
-There was one fresh attempt per model, size and proof setting, with a 45-minute
-limit. The configured models were `gpt-6-sol` and `claude-opus-5-5`, both at high
+Each model made one fresh attempt per size and proof setting, with a 45-minute
+limit. We used `gpt-6-sol` and `claude-opus-5-5`, both at high
 reasoning effort. Opus also had a $25 limit per attempt. The initial sizes were
-*k* = 1, 4, 8; *k* = 16 was added subsequently. Subjects ran in isolated workspaces
-with the frozen task files and Lean library. Previous submissions and organizer
-reference proofs were inaccessible.
+*k* = 1, 4, 8. We added *k* = 16 later. Each agent ran in an isolated workspace
+with fixed task files and a fixed Lean library. It could not access previous
+submissions or organizer reference proofs.
 
-In the local setting, subjects received the generated endpoint programs and their
-semantics. They could develop endpoint, trace and queue invariants, but could not
+For local proofs, the agents received the generated endpoint programs and their
+semantics. They could develop endpoint, trace and queue invariants. They could not
 use global realization, projection completion or related decomposition results,
-including through transitive proof dependencies. The [prompts](frozen/prompts)
-and [dependency policy](tools/route_policy.py) specify the restrictions. Final
-submissions were checked against pristine task files; only the standard Lean
-axioms `propext`, `Classical.choice` and `Quot.sound` were permitted.
+even indirectly through other lemmas. The [prompts](frozen/prompts) and
+[dependency policy](tools/route_policy.py) give the full restrictions. We checked
+each submission against fresh copies of the task files. The only permitted
+axioms were `propext`, `Classical.choice` and `Quot.sound`.
 
-Elapsed subject time includes model responses and tool calls, including builds
-during the attempt. It excludes task preparation, initial build warming,
-isolation checks and final independent checking. It measures elapsed proof
-construction time, not human effort or kernel checking time alone.
+We timed the agent's attempt, including model responses, tool calls and builds.
+The timer excluded task preparation, initial compilation, isolation checks and
+the final independent check. These times measure proof construction by the agent.
+They do not measure human effort or just Lean's checking time.
 
 ## Local proof results
 
-Times are minutes, rounded from the recorded seconds in [results.csv](results.csv).
-Each linked submission has its original checker verdict alongside it.
+Times are in minutes, rounded from the seconds recorded in [results.csv](results.csv).
+Each link opens the submitted proof. Its checker verdict is in the same directory.
 
 | Reviewers | GPT-6-Sol | Outcome | Claude Opus 5.5 | Outcome |
 |---:|---:|---|---:|---|
@@ -65,26 +63,26 @@ Each linked submission has its original checker verdict alongside it.
 | 8 | [41.8](runs/review-sol-k8-local-e1/Solution.lean) | Accepted | [9.8](runs/review-claude-k8-local-e1/Solution.lean) | Accepted |
 | 16 | [44.9](runs/review-sol-k16-local-e1/Solution.lean) | Not accepted¹ | [12.8](runs/review-claude-k16-local-e1/Solution.lean) | Accepted |
 
-¹ The Sol submission at *k* = 16 established the stated theorem in Lean, but the
+¹ Sol proved the theorem in Lean at *k* = 16, but the
 dependency check rejected its use of
 `_private.MSCAgents.Correctness.0.concatList_apply`, an elementary list identity
-covered by the experiment's module-based exclusion rule. It is recorded as an
-unaccepted attempt, rather than evidence that Sol could not prove the property.
+excluded by the rule covering its module. We therefore record the attempt as
+unaccepted. This rejection does not show that Sol was unable to prove completion.
 
-The smaller local proofs use explicit finite traces or finite enumeration. At
-larger sizes, both models developed parameterized constructions: complete the
-Agent's decisions, extend the other participants consistently, and establish
-channel matching and causal order. In particular, the successful Opus proofs at
+The smaller local proofs enumerate traces or cases. At larger sizes, both models
+used parameterized proofs. They complete the Agent's decisions, extend the other
+participants' traces consistently, and prove that messages match and respect
+causal order. The successful Opus proofs at
 *k* = 8 and 16 avoid enumerating all combinations of review decisions.
 
 ## Choreographic guarantee
 
 The [general theorem](pinned-lib/MSCAgents/DeadlockFreeness.lean)
 `projectDist_deadlockFree` establishes the same completion property for projections
-of well-typed choreographies. In the global setting, subjects received the source,
-its checked well-typedness and the checked equality between its projection and
-the endpoint programs. All eight submissions were accepted. Their elapsed times
-are retained here for completeness.
+of well-typed choreographies. For global proofs, the agents received the
+choreography and checked proofs that it was well-typed and projected to the given
+endpoint programs. All eight submissions were accepted. The table below gives
+their elapsed times.
 
 | Reviewers | GPT-6-Sol (min) | Claude Opus 5.5 (min) |
 |---:|---:|---:|
@@ -94,29 +92,29 @@ are retained here for completeness.
 | 16 | 1.07 | 0.54 |
 
 These proofs rewrite the endpoints using the projection equality and apply the
-general theorem; [this submission](runs/review-sol-k16-global-e1/Solution.lean)
-is representative. The theorem and the supplied certificates settle the essential
-argument before the subject starts. Their development and preparation are outside
-the timing measurements. The experiment therefore measures reuse of an established
-guarantee versus direct local recovery, rather than an isolated effect of notation
-under equal access to proof results.
+general theorem, as in [this submission](runs/review-sol-k16-global-e1/Solution.lean).
+The supplied theorem and certificates already settle the main proof obligation.
+We did not time their development or preparation. The experiment compares reusing
+this guarantee with proving completion directly from local programs. It does not
+isolate the effect of notation, since the two settings allow different proof results.
 
 ## Scope of the evidence
 
-The observations illustrate proof work that verification by construction can
-avoid, and show that both models can discover useful local invariants. One attempt
-per condition, on a single regular family, does not establish a scaling law or a
-general ranking of models. These measurements do not support a claim of
-exponential local proof cost. Less regular workflows and local proofs allowed to
-recover and reuse global structure remain to be investigated.
+These runs show the proof work that a general choreographic guarantee can avoid.
+They also show that both models can find useful local invariants. With one attempt
+per condition on one regular family, we cannot infer a scaling law or rank the
+models generally. The results do not show exponential growth in local proof cost.
+Further experiments should test less regular workflows and allow local proofs to
+recover and reuse global structure.
 
 ## Materials and checking
 
-The [artifact guide](ARTIFACTS.md) describes the frozen inputs, submitted proofs,
-recorded outcomes and commands for independent checking. The archive includes all
-16 timed attempts, including the unaccepted submission. The original timing
-measurements are retained; rebuilding a proof does not reproduce model latency.
+The [artifact guide](ARTIFACTS.md) explains how to inspect the inputs, proofs and
+outcomes and check the submissions yourself. The archive contains all 16 timed
+attempts, including the unaccepted submission. It retains the original times.
+Rebuilding a proof checks its validity but does not reproduce the model's running
+time.
 
 Suggested citation: ZipperGen. *Finite-prefix completion in optional-review
-workflows*. Experimental report, 2026. Cite this file through a GitHub commit
-permalink to identify the version used.
+workflows*. Experimental report, 2026. Use a GitHub commit permalink to cite the
+version you consulted.
