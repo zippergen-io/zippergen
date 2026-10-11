@@ -35,7 +35,10 @@ def ui_status(text: Any) -> list[dict[str, Any]]:
 
 
 def codex_progress(event: dict[str, Any]) -> list[dict[str, Any]]:
-    phase = {"item.started": "started", "item.completed": "completed"}.get(event.get("type"))
+    event_type = event.get("type")
+    if not isinstance(event_type, str):
+        return []
+    phase = {"item.started": "started", "item.completed": "completed"}.get(event_type)
     item = event.get("item")
     if phase is None or not isinstance(item, dict):
         return []

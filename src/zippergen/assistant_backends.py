@@ -756,9 +756,9 @@ def make_cli_assistant_backend(
                     "backend": spec.name,
                 }
 
-                def progress(event):
+                def progress(event, observer: ProgressObserver = on_progress):
                     try:
-                        on_progress({**context, **event})
+                        observer({**context, **event})
                     except Exception:
                         pass
 

@@ -934,7 +934,9 @@ def _doctor_checks(
             ))
 
     if workflow is not None:
-        from zippergen.assistant_backends import check_cli_assistant
+        from zippergen.assistant_backends import (
+            check_cli_assistant, normalize_assistant_selection,
+        )
         from zippergen.assistant_configuration import (
             effective_assistant_routes,
             resolved_assistant_actions,
@@ -943,9 +945,13 @@ def _doctor_checks(
         assistant_overrides = normalize_assistant_overrides(
             profile.get("assistants")
         )
+        try:
+            default_assistant = normalize_assistant_selection(profile.get("assistant"))
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         assistant_routing = effective_assistant_routes(
             workflow,
-            profile.get("assistant"),
+            default_assistant,
             assistant_overrides,
             module=module,
         )
