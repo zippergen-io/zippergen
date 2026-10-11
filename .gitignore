@@ -63,6 +63,8 @@ examples/medium_program.py
 # Local scratch / non-project tooling
 .superpowers/
 experiments/*
+!experiments/review-pilot/
+!experiments/review-pilot/**
 !experiments/icfem-2026-cpl/
 !experiments/icfem-2026-cpl/**
 uv.lock

@@ -1,0 +1,17 @@
+run_id,model,reasoning_effort,k,arm,started,wall_s,accepted,time_limit_s
+review-sol-k1-global-e1,gpt-6-sol,high,1,global,2026-09-30T15:23:59+0200,130.3,True,2700
+review-sol-k1-local-e1,gpt-6-sol,high,1,local,2026-09-30T15:26:32+0200,1447.9,True,2700
+review-sol-k4-global-e1,gpt-6-sol,high,4,global,2026-09-30T15:51:41+0200,124.1,True,2700
+review-sol-k4-local-e1,gpt-6-sol,high,4,local,2026-09-30T15:54:09+0200,1801.8,True,2700
+review-sol-k8-global-e1,gpt-6-sol,high,8,global,2026-09-30T16:25:50+0200,160.0,True,2700
+review-sol-k8-local-e1,gpt-6-sol,high,8,local,2026-09-30T16:28:54+0200,2506.9,True,2700
+review-sol-k16-global-e1,gpt-6-sol,high,16,global,2026-10-04T11:47:23+0200,64.2,True,2700
+review-sol-k16-local-e1,gpt-6-sol,high,16,local,2026-10-04T11:49:20+0200,2693.1,False,2700
+review-claude-k1-global-e1,claude-opus-5-5,high,1,global,2026-10-03T18:31:04,37.9,True,2700
+review-claude-k1-local-e1,claude-opus-5-5,high,1,local,2026-10-03T18:32:07,272.7,True,2700
+review-claude-k4-global-e1,claude-opus-5-5,high,4,global,2026-10-03T18:36:56,41.6,True,2700
+review-claude-k4-local-e1,claude-opus-5-5,high,4,local,2026-10-03T18:38:00,324.4,True,2700
+review-claude-k8-global-e1,claude-opus-5-5,high,8,global,2026-10-03T18:43:54,31.5,True,2700
+review-claude-k8-local-e1,claude-opus-5-5,high,8,local,2026-10-03T18:44:42,585.0,True,2700
+review-claude-k16-global-e1,claude-opus-5-5,high,16,global,2026-10-03T20:02:43,32.1,True,2700
+review-claude-k16-local-e1,claude-opus-5-5,high,16,local,2026-10-03T20:03:53,767.2,True,2700

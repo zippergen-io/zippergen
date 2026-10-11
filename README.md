@@ -629,6 +629,10 @@ Causal Past Logic lets a condition read distributed state that is causally
 visible at that point in the run. It works alongside what projection already
 guarantees before the run starts.
 
+The [optional-review completion pilot](experiments/review-pilot/README.md)
+reports local Lean proof construction by Sol and Opus, with frozen tasks,
+submitted proofs and checker outcomes.
+
 ## License
 
 ZipperGen is released under the Apache License 2.0. See

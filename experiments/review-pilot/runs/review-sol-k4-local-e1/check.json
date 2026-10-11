@@ -1,0 +1,17 @@
+{
+  "k": 4,
+  "arm": "local",
+  "statement": "ReviewCompletion.CompletionGoal",
+  "source_ok": true,
+  "source_problems": [],
+  "route_rule": "direct-only",
+  "build_ok": true,
+  "build_seconds": 88.1,
+  "axioms": [
+    "Quot.sound",
+    "propext"
+  ],
+  "banned_dependencies": [],
+  "errors": [],
+  "proved": true
+}

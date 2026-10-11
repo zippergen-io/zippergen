@@ -1,0 +1,18 @@
+{
+  "k": 16,
+  "arm": "global",
+  "statement": "ReviewCompletion.CompletionGoal",
+  "source_ok": true,
+  "source_problems": [],
+  "route_rule": "unrestricted",
+  "build_ok": true,
+  "build_seconds": 20.8,
+  "axioms": [
+    "Classical.choice",
+    "Quot.sound",
+    "propext"
+  ],
+  "banned_dependencies": [],
+  "errors": [],
+  "proved": true
+}

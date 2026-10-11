@@ -1,0 +1,24 @@
+{
+  "k": 16,
+  "arm": "local",
+  "statement": "ReviewCompletion.CompletionGoal",
+  "source_ok": true,
+  "source_problems": [],
+  "route_rule": "direct-only",
+  "build_ok": false,
+  "build_seconds": 34.8,
+  "axioms": [
+    "Classical.choice",
+    "Quot.sound",
+    "propext"
+  ],
+  "banned_dependencies": [
+    "_private.MSCAgents.Correctness.0.concatList_apply"
+  ],
+  "errors": [
+    "error: Check.lean:27:0: Forbidden global proof dependency: _private.MSCAgents.Correctness.0.concatList_apply",
+    "error: Lean exited with code 1",
+    "error: build failed"
+  ],
+  "proved": false
+}

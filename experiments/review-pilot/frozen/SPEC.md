@@ -1,0 +1,6 @@
+# One-request optional-review completion pilot
+Predeclared fixed sizes: k=1,4,8. One fresh global/local pair per size, sequential runs. Model: gpt-6-sol; reasoning effort: high; per-arm cap: 2700 seconds. No local organizer reference proof; solvability follows from checked exact projection and the generic completion theorem. Global organizer proof is kept outside the subject packets.
+
+Both arms prove ReviewCompletion.CompletionGoal on the same actual projections. Global may apply generic projection results; local must reason directly with transitive route auditing. Measure acceptance first; elapsed subject time, usage tokens, submitted proof lines and proof route second. Preparation/build warming are excluded from subject time. Timeouts are censored attempts, infrastructure/rate-limit failures are invalid, and a completed proof is judged by the pristine checker even if the subject wrap-up fails.
+
+This is a new one-request family matching the talk's coordination example. It does not replicate the earlier repeated-request tagged completion experiment. No outcome or magnitude is assumed. All attempted sizes/results are reported. Opaque actions do not establish approval-dependent action safety.

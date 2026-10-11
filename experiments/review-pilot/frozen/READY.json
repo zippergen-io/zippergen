@@ -1,0 +1,15 @@
+{
+  "ready": true,
+  "stage": "source frozen; launch gated by checker and isolation",
+  "sizes": [
+    1,
+    4,
+    8
+  ],
+  "arms": [
+    "global",
+    "local"
+  ],
+  "model": "gpt-6-sol",
+  "effort": "high"
+}
