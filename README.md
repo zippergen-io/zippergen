@@ -630,7 +630,7 @@ visible at that point in the run. It works alongside what projection already
 guarantees before the run starts.
 
 The [optional-review completion pilot](experiments/review-pilot/README.md)
-reports local Lean proof construction by Sol and Opus, with frozen tasks,
+reports local Lean proof construction by Sol, Opus and Astra, with frozen tasks,
 submitted proofs and checker outcomes.
 
 ## License

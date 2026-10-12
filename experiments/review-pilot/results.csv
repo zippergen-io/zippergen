@@ -15,3 +15,7 @@ review-claude-k8-global-e1,claude-opus-5-5,high,8,global,2026-10-03T18:43:54,31.
 review-claude-k8-local-e1,claude-opus-5-5,high,8,local,2026-10-03T18:44:42,585.0,True,2700
 review-claude-k16-global-e1,claude-opus-5-5,high,16,global,2026-10-03T20:02:43,32.1,True,2700
 review-claude-k16-local-e1,claude-opus-5-5,high,16,local,2026-10-03T20:03:53,767.2,True,2700
+review-astra-k1-local-e1,gpt-6-astra,high,1,local,2026-10-12T20:22:07+0200,270.3,True,2700
+review-astra-k4-local-e1,gpt-6-astra,high,4,local,2026-10-12T20:27:00+0200,296.2,True,2700
+review-astra-k8-local-e1,gpt-6-astra,high,8,local,2026-10-12T20:32:27+0200,708.6,True,2700
+review-astra-k16-local-e1,gpt-6-astra,high,16,local,2026-10-12T20:44:46+0200,434.6,True,2700

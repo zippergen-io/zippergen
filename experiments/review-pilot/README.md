@@ -1,9 +1,9 @@
 # Finite-prefix completion in optional-review workflows
 
-ZipperGen experimental report, 11 October 2026. Runs took place from
-30 September to 4 October 2026.
+ZipperGen experimental report, 12 October 2026. Sol and Opus runs took place from
+30 September to 4 October 2026. Astra runs took place on 12 October 2026.
 
-We asked two coding agents to prove completion in Lean for a family of reviewer
+We asked three coding agents to prove completion in Lean for a family of reviewer
 workflows. Well-typed choreographies already provide this guarantee through a
 general projection theorem. This pilot measured how long the agents took to prove
 the same property directly from the projected local programs.
@@ -31,12 +31,19 @@ spawning or cancellation. This report covers only this family.
 
 ## Method
 
-Each model made one fresh attempt per size and proof setting, with a 45-minute
-limit. We used `gpt-6-sol` and `claude-opus-5-5`, both at high
-reasoning effort. Opus also had a $25 limit per attempt. The initial sizes were
-*k* = 1, 4, 8. We added *k* = 16 later. Each agent ran in an isolated workspace
+We used `gpt-6-sol`, `claude-opus-5-5` and `gpt-6-astra`, all at high reasoning
+effort. Sol and Opus each made one fresh attempt per size in both the local and
+global settings. Astra made one fresh attempt per size in the local setting only.
+Attempts ran sequentially within each batch, with a 45-minute limit. Opus also
+had a $25 limit per attempt. The initial sizes were *k* = 1, 4, 8. We added
+*k* = 16 later. Each agent ran in an isolated workspace
 with fixed task files and a fixed Lean library. It could not access previous
 submissions or organizer reference proofs.
+
+The Astra runs used the same prompts, task files, Lean library, isolation rules
+and checker as the earlier runs. All four finished without retries, timeouts or
+runner errors. Astra used Codex CLI 0.162.1. Sol used 0.160.0, so their comparison
+also includes a CLI version difference.
 
 For local proofs, the agents received the generated endpoint programs and their
 semantics. They could develop endpoint, trace and queue invariants. They could not
@@ -55,13 +62,14 @@ They do not measure human effort or just Lean's checking time.
 
 Times are in minutes, rounded from the seconds recorded in [results.csv](results.csv).
 Each link opens the submitted proof. Its checker verdict is in the same directory.
+All submissions were accepted except the marked Sol attempt at *k* = 16.
 
-| Reviewers | GPT-6-Sol | Outcome | Claude Opus 5.5 | Outcome |
-|---:|---:|---|---:|---|
-| 1 | [24.1](runs/review-sol-k1-local-e1/Solution.lean) | Accepted | [4.5](runs/review-claude-k1-local-e1/Solution.lean) | Accepted |
-| 4 | [30.0](runs/review-sol-k4-local-e1/Solution.lean) | Accepted | [5.4](runs/review-claude-k4-local-e1/Solution.lean) | Accepted |
-| 8 | [41.8](runs/review-sol-k8-local-e1/Solution.lean) | Accepted | [9.8](runs/review-claude-k8-local-e1/Solution.lean) | Accepted |
-| 16 | [44.9](runs/review-sol-k16-local-e1/Solution.lean) | Not accepted¹ | [12.8](runs/review-claude-k16-local-e1/Solution.lean) | Accepted |
+| Reviewers | GPT-6-Sol | Claude Opus 5.5 | GPT-6-Astra |
+|---:|---:|---:|---:|
+| 1 | [24.1](runs/review-sol-k1-local-e1/Solution.lean) | [4.5](runs/review-claude-k1-local-e1/Solution.lean) | [4.5](runs/review-astra-k1-local-e1/Solution.lean) |
+| 4 | [30.0](runs/review-sol-k4-local-e1/Solution.lean) | [5.4](runs/review-claude-k4-local-e1/Solution.lean) | [4.9](runs/review-astra-k4-local-e1/Solution.lean) |
+| 8 | [41.8](runs/review-sol-k8-local-e1/Solution.lean) | [9.8](runs/review-claude-k8-local-e1/Solution.lean) | [11.8](runs/review-astra-k8-local-e1/Solution.lean) |
+| 16 | [44.9](runs/review-sol-k16-local-e1/Solution.lean), not accepted¹ | [12.8](runs/review-claude-k16-local-e1/Solution.lean) | [7.2](runs/review-astra-k16-local-e1/Solution.lean) |
 
 ¹ Sol proved the theorem in Lean at *k* = 16, but the
 dependency check rejected its use of
@@ -69,10 +77,10 @@ dependency check rejected its use of
 excluded by the rule covering its module. We therefore record the attempt as
 unaccepted. This rejection does not show that Sol was unable to prove completion.
 
-The smaller local proofs enumerate traces or cases. At larger sizes, both models
+The smaller local proofs enumerate traces or cases. At larger sizes, all three models
 used parameterized proofs. They complete the Agent's decisions, extend the other
 participants' traces consistently, and prove that messages match and respect
-causal order. The successful Opus proofs at
+causal order. The successful Opus and Astra proofs at
 *k* = 8 and 16 avoid enumerating all combinations of review decisions.
 
 ## Choreographic guarantee
@@ -81,8 +89,8 @@ The [general theorem](pinned-lib/MSCAgents/DeadlockFreeness.lean)
 `projectDist_deadlockFree` establishes the same completion property for projections
 of well-typed choreographies. For global proofs, the agents received the
 choreography and checked proofs that it was well-typed and projected to the given
-endpoint programs. All eight submissions were accepted. The table below gives
-their elapsed times.
+endpoint programs. All eight Sol and Opus submissions were accepted. The table
+below gives their elapsed times. Astra was not run in this setting.
 
 | Reviewers | GPT-6-Sol (min) | Claude Opus 5.5 (min) |
 |---:|---:|---:|
@@ -101,16 +109,17 @@ isolate the effect of notation, since the two settings allow different proof res
 ## Scope of the evidence
 
 These runs show the proof work that a general choreographic guarantee can avoid.
-They also show that both models can find useful local invariants. With one attempt
+They also show that all three models can find useful local invariants. With one attempt
 per condition on one regular family, we cannot infer a scaling law or rank the
-models generally. The results do not show exponential growth in local proof cost.
+models generally. Astra finished faster at *k* = 16 than at *k* = 8 and produced a
+shorter proof. The results do not show exponential growth in local proof cost.
 Further experiments should test less regular workflows and allow local proofs to
 recover and reuse global structure.
 
 ## Materials and checking
 
 The [artifact guide](ARTIFACTS.md) explains how to inspect the inputs, proofs and
-outcomes and check the submissions yourself. The archive contains all 16 timed
+outcomes and check the submissions yourself. The archive contains all 20 timed
 attempts, including the unaccepted submission. It retains the original times.
 Rebuilding a proof checks its validity but does not reproduce the model's running
 time.
