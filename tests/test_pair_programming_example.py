@@ -16,7 +16,7 @@ APPROVING = "APPROVE\nFINDINGS: 0\nNothing real to report.\n\nLooks correct."
 OBJECTING = "REVISE\nFINDINGS: 2\nThe fix is right but the tests do not pin it.\n\n**1.** ..."
 
 
-def _run(verdicts: list[str], reviews: list[str], *, detail: str, max_rounds: int = 4):
+def _run(verdicts: list[str], reviews: list[str], *, detail: str, max_rounds: int = 4, note: str = ""):
     workflow, module = load_workflow_spec(SPEC)
     remaining_reviews = iter(reviews)
     answers = iter(verdicts)
@@ -33,7 +33,7 @@ def _run(verdicts: list[str], reviews: list[str], *, detail: str, max_rounds: in
 
     def human_backend(action: Any, inputs: dict[str, object]) -> dict[str, object]:
         seen.setdefault(action.name, []).append(dict(inputs))
-        value = next(answers) if action.name == "judge_turn" else ""
+        value = next(answers) if action.name == "judge_turn" else note
         return {action.output: value}
 
     result = run(
@@ -121,3 +121,16 @@ def test_a_review_that_breaks_its_contract_is_not_read_as_approval():
     assert "Stopped at the 1-round limit" in result, (
         "an unreadable review continues the loop rather than approving"
     )
+
+
+def test_human_note_amends_the_task_for_both_assistants():
+    _result, seen = _run(
+        ["Another round", "Ship it"], [OBJECTING, APPROVING],
+        detail="brief", note="Also add a one-line docstring.",
+    )
+    for role in ["implement", "review"]:
+        first, second = seen[role]
+        assert "docstring" not in str(first["task"])
+        assert "Also add a one-line docstring." in str(second["task"])
+        assert "takes precedence" in str(second["task"])
+    assert seen["implement"][1]["task"] == seen["review"][1]["task"]
