@@ -22,6 +22,16 @@ The reusable Lean development underlying ZipperGen's formal guarantees lives
 in [`formal/lean`](formal/lean). Paper-specific proof artifacts are published
 separately in `zippergen-lean`.
 
+## Meet ZipperCrew
+
+Give a task to an AI team in a pixel office. Watch the work and reviews, then
+decide what ships. [Explore ZipperCrew](https://github.com/zippergen-io/zippercrew),
+an early preview built on ZipperGen.
+
+<a href="https://github.com/zippergen-io/zippercrew">
+  <img src="assets/zippercrew-office.png" alt="ZipperCrew's pixel office, with two reviewers and a worker handing the decision back to you" width="420">
+</a>
+
 ---
 
 ## From code to a running service
