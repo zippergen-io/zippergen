@@ -25,7 +25,7 @@ separately in `zippergen-lean`.
 ## Meet ZipperCrew
 
 Give a task to an AI team in a pixel office. Watch the work and reviews, then
-decide what ships. [Explore ZipperCrew](https://github.com/zippergen-io/zippercrew),
+decide what to keep. [Explore ZipperCrew](https://github.com/zippergen-io/zippercrew),
 an early preview built on ZipperGen.
 
 <a href="https://github.com/zippergen-io/zippercrew">
